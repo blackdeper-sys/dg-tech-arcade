@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>DG TECH ARCADE — Controle Remoto 4G & Gestão de Vendas</title>
+  <meta name="description" content="Sistema de telemetria, controle remoto via 4G/Wi-Fi e gestão de vendas para fliperamas DG TECH ARCADE.">
+  
+  <!-- Google Fonts: Orbitron (Arcade/HUD), Rajdhani (Técnico/Dados) e Inter (Interface) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Estilos Customizados -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="arcade-theme">
+  <!-- Efeitos de Scanline e Ambient Glow Retrô -->
+  <div class="scanlines" aria-hidden="true"></div>
+  <div class="ambient-glow" aria-hidden="true"></div>
+
+  <!-- Cabeçalho Principal (Otimizado para Mobile e Desktop) -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand-group">
+        <div class="brand-logo-icon">
+          <span class="arcade-joystick-icon">🕹️</span>
+        </div>
+        <div class="brand-text">
+          <h1 class="brand-title">DG TECH <span class="accent-red">ARCADE</span></h1>
+          <p class="brand-subtitle">CONTROLE REMOTO 4G & GESTÃO DE VENDAS</p>
+        </div>
+      </div>
+
+      <div class="header-status-panel">
+        <div class="status-indicator online" id="mpSyncStatusBadge" title="Telemetria Nuvem Mercado Pago da Barbearia">
+          <span class="pulse-dot" style="background:#00e5ff;box-shadow:0 0 10px #00e5ff;"></span>
+          <span class="status-text" id="mpSyncText">BARBEARIA (PIX NUVEM)</span>
+        </div>
+
+        <div class="status-indicator online" id="connectionStatusBadge">
+          <span class="pulse-dot"></span>
+          <span class="status-text" id="statusLabel">4G / WI-FI</span>
+        </div>
+
+        <div class="header-clock" id="systemClock">--:--:--</div>
+
+        <div class="header-actions">
+          <button class="btn-icon" id="btnManualSyncMp" title="Sincronizar Vendas Pix do Mercado Pago Agora">
+            <span>🔄</span>
+          </button>
+          <button class="btn-icon" id="btnOpenQrModal" title="Abrir QR Code para Celular (4G/5G)">
+            <span>📱</span>
+          </button>
+          <button class="btn-icon" id="toggleSoundBtn" title="Ativar/Desativar Sons Arcade">
+            <span id="soundIcon">🔊</span>
+          </button>
+          <button class="btn-icon" id="settingsModalBtn" title="Configurações e Divisão da Barbearia">
+            <span>⚙️</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Conteúdo Principal -->
+  <main class="dashboard-main">
+    
+    <!-- 1. CONSOLE PRINCIPAL: DISPARO DE COIN (MANUTENÇÃO / TESTES / VENDAS) -->
+    <section class="hero-control-card">
+      <div class="hero-card-glow"></div>
+      <div class="hero-card-content">
+        
+        <div class="hero-info">
+          <div class="hero-badge">
+            <span class="badge-icon">⚡</span> COMANDO REMOTO RELÉ (ESP-01S)
+          </div>
+          <h2 class="hero-heading">DISPARO DE COIN & MANUTENÇÃO</h2>
+          <p class="hero-desc">
+            Libere pulsos físicos de ficha no moedeiro do fliperama pelo celular na rede móvel ou Wi-Fi.
+          </p>
+
+          <!-- Seletor de Modo de Disparo -->
+          <div class="trigger-mode-container">
+            <span class="selector-title">FINALIDADE DO DISPARO:</span>
+            <div class="mode-pill-group">
+              <button class="mode-pill active" data-mode="manutencao" id="pillModeManutencao">
+                <span class="pill-icon">🔧</span>
+                <span class="pill-text">Manutenção / Teste</span>
+                <small class="pill-sub">Não afeta o caixa</small>
+              </button>
+              <button class="mode-pill" data-mode="cortesia" id="pillModeCortesia">
+                <span class="pill-icon">🎁</span>
+                <span class="pill-text">Cortesia / Bônus</span>
+                <small class="pill-sub">Ficha grátis</small>
+              </button>
+              <button class="mode-pill" data-mode="venda" id="pillModeVenda">
+                <span class="pill-icon">💵</span>
+                <span class="pill-text">Venda Manual</span>
+                <small class="pill-sub">Soma no faturamento</small>
+              </button>
+            </div>
+          </div>
+
+          <!-- Seletor Rápido de Quantidade de Fichas -->
+          <div class="token-quantity-container">
+            <span class="selector-title">QUANTIDADE DE FICHAS:</span>
+            <div class="token-buttons-grid">
+              <button class="token-qty-btn active" data-qty="1">
+                <span class="qty-num">1</span>
+                <span class="qty-label">Ficha</span>
+              </button>
+              <button class="token-qty-btn" data-qty="2">
+                <span class="qty-num">2</span>
+                <span class="qty-label">Fichas</span>
+              </button>
+              <button class="token-qty-btn" data-qty="5">
+                <span class="qty-num">5</span>
+                <span class="qty-label">Fichas</span>
+              </button>
+              <div class="custom-qty-wrapper">
+                <label for="customQtyInput" class="custom-label">Outra Qtd:</label>
+                <input type="number" id="customQtyInput" min="1" max="20" value="1" class="arcade-input-number">
+              </div>
+            </div>
+          </div>
+
+          <!-- Estatísticas Rápidas de Disparo -->
+          <div class="quick-coin-stats">
+            <span>Coins Disparados Hoje: <strong id="authorizedCoinsCount">0</strong></span>
+            <span class="separator">•</span>
+            <span>Último Disparo: <strong id="lastCoinTime">Nenhum</strong></span>
+          </div>
+        </div>
+
+        <!-- Botão de Ação Primária -->
+        <div class="hero-action-container">
+          <button id="btnAuthorizeCoin" class="btn-arcade-fire" title="Toque para disparar crédito físico no fliperama">
+            <div class="btn-glow-ring"></div>
+            <div class="btn-inner">
+              <span class="coin-symbol">🪙</span>
+              <span class="btn-main-label" id="fireBtnLabel">DISPARAR 1 FICHA</span>
+              <span class="btn-sub-label" id="fireBtnSubLabel">MODO MANUTENÇÃO</span>
+            </div>
+          </button>
+
+          <!-- Opções de Segurança / Confirmação -->
+          <div class="security-controls-row">
+            <div class="security-switch-wrapper">
+              <label class="toggle-switch">
+                <input type="checkbox" id="requireConfirmCheckbox">
+                <span class="slider"></span>
+              </label>
+              <span class="switch-label">Exigir confirmação antes de disparar</span>
+            </div>
+
+            <div class="pin-quick-input-wrapper" id="pinQuickWrapper">
+              <label for="pinInputQuick" class="pin-label">PIN 4G:</label>
+              <input type="password" id="pinInputQuick" class="arcade-input-pin" maxlength="8" placeholder="1234" value="1234">
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- 2. GRID DE CONTROLE FINANCEIRO & TELEMETRIA DE VENDAS -->
+    <section class="telemetry-grid">
+      <!-- Card 1: Caixa da Sessão Atual -->
+      <article class="metric-card card-money">
+        <div class="card-header">
+          <span class="card-tag">CAIXA DA SESSÃO</span>
+          <span class="card-icon">💵</span>
+        </div>
+        <div class="card-body">
+          <h3 class="metric-label">DINHEIRO EM CAIXA (ATUAL)</h3>
+          <div class="metric-value-wrapper">
+            <span class="currency-prefix">R$</span>
+            <span class="digital-display money-glow" id="sessionCashTotal">0,00</span>
+          </div>
+        </div>
+        <div class="card-footer card-footer-split">
+          <div class="footer-stat">
+            <span class="stat-label">Barbearia (<span id="barberSplitPercentDisplay">50</span>%):</span>
+            <strong class="stat-value text-yellow" id="barberSplitValue">R$ 0,00</strong>
+          </div>
+          <div class="footer-stat">
+            <span class="stat-label">Seu Lucro:</span>
+            <strong class="stat-value text-green" id="ownerSplitValue">R$ 0,00</strong>
+          </div>
+          <button class="btn-micro" id="btnQuickSangria" title="Realizar fechamento deste caixa">Sangria</button>
+        </div>
+      </article>
+
+      <!-- Card 2: Fichas da Sessão -->
+      <article class="metric-card card-fichas">
+        <div class="card-header">
+          <span class="card-tag">MOVIMENTAÇÃO</span>
+          <span class="card-icon">🎟️</span>
+        </div>
+        <div class="card-body">
+          <h3 class="metric-label">FICHAS DA SESSÃO</h3>
+          <div class="metric-value-wrapper">
+            <span class="digital-display" id="sessionTokensCount">0</span>
+            <span class="unit-label">fichas</span>
+          </div>
+        </div>
+        <div class="card-footer">
+          <div class="footer-stat">
+            <span class="stat-label">Pagas:</span>
+            <strong class="stat-value text-green" id="paidTokensCount">0</strong>
+          </div>
+          <div class="footer-stat">
+            <span class="stat-label">Cortesias:</span>
+            <strong class="stat-value text-yellow" id="courtesyTokensCount">0</strong>
+          </div>
+        </div>
+      </article>
+
+      <!-- Card 3: Totalizador Geral Inviolável -->
+      <article class="metric-card card-general">
+        <div class="card-header">
+          <span class="card-tag">TOTALIZADOR GERAL</span>
+          <span class="card-icon">🔒</span>
+        </div>
+        <div class="card-body">
+          <h3 class="metric-label">HISTÓRICO ACUMULADO VITALÍCIO</h3>
+          <div class="metric-value-wrapper">
+            <span class="digital-display digital-secondary" id="totalGeneralTokens">0</span>
+            <span class="unit-label">fichas</span>
+          </div>
+        </div>
+        <div class="card-footer">
+          <div class="footer-stat">
+            <span class="stat-label">Faturamento Total:</span>
+            <strong class="stat-value" id="totalGeneralCash">R$ 0,00</strong>
+          </div>
+        </div>
+      </article>
+
+      <!-- Card 4: Manutenções & Eficiência -->
+      <article class="metric-card card-performance">
+        <div class="card-header">
+          <span class="card-tag">SUPORTE TÉCNICO</span>
+          <span class="card-icon">🔧</span>
+        </div>
+        <div class="card-body">
+          <h3 class="metric-label">TESTES / MANUTENÇÕES</h3>
+          <div class="metric-value-wrapper">
+            <span class="digital-display text-blue" id="maintenanceTokensCount">0</span>
+            <span class="unit-label">coins</span>
+          </div>
+        </div>
+        <div class="card-footer">
+          <div class="footer-stat">
+            <span class="stat-label">Transações:</span>
+            <strong class="stat-value" id="totalTransactionsCount">0</strong>
+          </div>
+          <div class="footer-stat">
+            <span class="stat-label">Disponibilidade:</span>
+            <strong class="stat-value text-green" id="machineEfficiency">100%</strong>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- 3. CENTRAL DE COMUNICAÇÃO DO RELÉ & FEED EM TEMPO REAL -->
+    <div class="middle-layout-grid">
+      <!-- Coluna 1: Status da Conexão com o Relé ESP-01S -->
+      <section class="panel-card hardware-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <span class="panel-icon">📡</span>
+            <div>
+              <h3 class="panel-title">MÓDULO RELÉ COIN (ESP-01S)</h3>
+              <p class="panel-sub">Comunicação direta com o gabinete do fliperama</p>
+            </div>
+          </div>
+          <div class="status-indicator online" id="esp01StatusBadge">
+            <span class="pulse-dot"></span>
+            <span id="esp01StatusText">ONLINE</span>
+          </div>
+        </div>
+
+        <div class="hardware-console">
+          <div class="input-with-action">
+            <label for="esp01IpInput" class="compact-label">IP ESP-01S:</label>
+            <input type="text" id="esp01IpInput" class="arcade-input-compact" value="192.168.18.99" placeholder="192.168.18.99">
+            <button class="btn-micro" id="btnPingEsp01" title="Testar Conexão com ESP-01S">Ping Teste</button>
+          </div>
+
+          <div class="quick-maintenance-actions">
+            <button class="btn-secondary btn-compact" id="btnPulse1Test">
+              <span>⚡</span> Pulso 1 Ficha
+            </button>
+            <button class="btn-secondary btn-compact" id="btnPulse2Test">
+              <span>⚡</span> Pulso 2 Fichas
+            </button>
+          </div>
+
+          <!-- Feed de Eventos do Hardware -->
+          <div class="hardware-feed" id="hardwareFeed">
+            <div class="feed-line"><span class="feed-time">SISTEMA</span> DG TECH ARCADE pronto para acionamento via 4G / Wi-Fi.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Coluna 2: Ações Rápidas de Gestão Financeira -->
+      <section class="panel-card financial-actions-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <span class="panel-icon">💼</span>
+            <div>
+              <h3 class="panel-title">GESTÃO DE CAIXA & AUDITORIA</h3>
+              <p class="panel-sub">Operações de recolhimento e controle de entradas</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions-card-body">
+          <div class="financial-btn-grid">
+            <button class="btn-large-action btn-danger-glow" id="btnOpenSangriaModal">
+              <span class="action-icon">💸</span>
+              <div class="action-texts">
+                <strong>Fechar Caixa / Sangria</strong>
+                <small>Zerar sessão atual e registrar retirada</small>
+              </div>
+            </button>
+
+            <button class="btn-large-action btn-secondary-glow" id="btnOpenManualSaleModal">
+              <span class="action-icon">➕</span>
+              <div class="action-texts">
+                <strong>Registrar Entrada Manual</strong>
+                <small>Adicionar moedas/cédulas físicas ao caixa</small>
+              </div>
+            </button>
+
+            <button class="btn-large-action btn-secondary-glow" id="btnExportCsv">
+              <span class="action-icon">📥</span>
+              <div class="action-texts">
+                <strong>Exportar Relatório CSV</strong>
+                <small>Baixar planilha com todas as transações</small>
+              </div>
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 4. LOG DE AUDITORIA & HISTÓRICO DE TRANSAÇÕES -->
+    <section class="panel-card logs-panel">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="panel-icon">📜</span>
+          <div>
+            <h3 class="panel-title">LOG DE AUDITORIA & REGISTRO DE TRANSAÇÕES</h3>
+            <p class="panel-sub">Histórico em tempo real de vendas, manutenções técnicas e sangrias</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filtros do Log -->
+      <div class="log-filter-bar">
+        <div class="filter-group">
+          <button class="filter-pill active" data-filter="all">Todos</button>
+          <button class="filter-pill" data-filter="venda">💵 Vendas</button>
+          <button class="filter-pill" data-filter="manutencao">🔧 Manutenções</button>
+          <button class="filter-pill" data-filter="cortesia">🎁 Cortesias</button>
+          <button class="filter-pill" data-filter="sangria">💸 Sangrias</button>
+        </div>
+        <div class="search-box">
+          <input type="text" id="logSearchInput" placeholder="Pesquisar evento...">
+        </div>
+      </div>
+
+      <!-- Tabela de Logs Responsiva -->
+      <div class="table-responsive">
+        <table class="telemetry-table" id="telemetryTable">
+          <thead>
+            <tr>
+              <th>HORÁRIO</th>
+              <th>TIPO</th>
+              <th>DESCRIÇÃO DO EVENTO</th>
+              <th>FICHAS</th>
+              <th>VALOR (R$)</th>
+              <th>ORIGEM</th>
+            </tr>
+          </thead>
+          <tbody id="logsTableBody">
+            <!-- Inserido dinamicamente via app.js -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Rodapé -->
+  <footer class="app-footer">
+    <div class="footer-container">
+      <p><strong>DG TECH ARCADE</strong> — Gestão Profissional & Controle Remoto 4G/Wi-Fi para Fliperamas.</p>
+    </div>
+  </footer>
+
+  <!-- MODAL: Confirmação de Disparo de Coin -->
+  <div class="modal-overlay" id="confirmCoinModal" aria-hidden="true">
+    <div class="modal-box modal-red">
+      <div class="modal-header">
+        <span class="modal-icon-badge">🪙</span>
+        <h3>CONFIRMAR DISPARO DE CRÉDITO</h3>
+      </div>
+      <div class="modal-body">
+        <p id="confirmModalDesc">Você está prestes a enviar um comando de disparo físico no relé do fliperama.</p>
+        <div class="modal-highlight-box">
+          <span class="pulse-warning" id="confirmModalModeHighlight">Modo: Manutenção Técnica (Não altera o caixa financeiro)</span>
+        </div>
+        <div class="form-group">
+          <label for="coinAuthReason">Motivo / Observação:</label>
+          <select id="coinAuthReason" class="arcade-input">
+            <option value="Suporte Técnico / Manutenção">Suporte Técnico / Manutenção</option>
+            <option value="Teste de Funcionamento">Teste de Funcionamento</option>
+            <option value="Cortesia / Atendimento">Cortesia / Atendimento</option>
+            <option value="Ressarcimento de Ficha Travada">Ressarcimento de Ficha Travada</option>
+            <option value="Demonstração Comercial">Demonstração Comercial</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" id="btnCancelCoin">Cancelar</button>
+        <button class="btn-confirm-fire" id="btnConfirmCoin">DISPARAR AGORA</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Fechamento de Caixa / Sangria -->
+  <div class="modal-overlay" id="sangriaModal" aria-hidden="true">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span class="modal-icon-badge">💸</span>
+        <h3>FECHAMENTO DE CAIXA / SANGRIA</h3>
+      </div>
+      <div class="modal-body">
+        <p>Esta operação zera o <strong>Caixa da Sessão Atual</strong> e gera um registro de auditoria com data e hora.</p>
+        <div class="sangria-summary-box">
+          <div class="sangria-row">
+            <span>Total em Dinheiro a Recolher:</span>
+            <strong class="text-green text-large" id="sangriaCashAmount">R$ 0,00</strong>
+          </div>
+          <div class="sangria-row">
+            <span>Fichas Vendidas na Sessão:</span>
+            <strong id="sangriaTokensAmount">0 fichas</strong>
+          </div>
+          <div class="sangria-split-box">
+            <div class="split-row">
+              <span>💈 Repasse Barbearia (<span id="sangriaBarberPercentLabel">50</span>%):</span>
+              <strong class="text-yellow font-mono" id="sangriaBarberAmount">R$ 0,00</strong>
+            </div>
+            <div class="split-row">
+              <span>🕹️ Seu Lucro Líquido (<span id="sangriaOwnerPercentLabel">50</span>%):</span>
+              <strong class="text-green font-mono" id="sangriaOwnerAmount">R$ 0,00</strong>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="sangriaResponsavel">Nome do Responsável:</label>
+          <input type="text" id="sangriaResponsavel" value="Daniel" class="arcade-input" placeholder="Seu nome">
+        </div>
+        <div class="form-group">
+          <label for="sangriaObservacao">Observações (opcional):</label>
+          <input type="text" id="sangriaObservacao" class="arcade-input" placeholder="Ex: Retirada quinzenal para depósito">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" id="btnCancelSangria">Cancelar</button>
+        <button class="btn-confirm-fire" id="btnConfirmSangria">CONFIRMAR FECHAMENTO</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Registro Manual de Venda -->
+  <div class="modal-overlay" id="manualSaleModal" aria-hidden="true">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span class="modal-icon-badge">➕</span>
+        <h3>REGISTRAR ENTRADA MANUAL</h3>
+      </div>
+      <div class="modal-body">
+        <p>Registre moedas ou cédulas inseridas fisicamente no moedeiro do fliperama.</p>
+        <div class="form-group">
+          <label for="manualSaleFichas">Quantidade de Fichas:</label>
+          <input type="number" id="manualSaleFichas" min="1" max="100" value="1" class="arcade-input">
+        </div>
+        <div class="form-group">
+          <label for="manualSaleValor">Valor em Dinheiro (R$):</label>
+          <input type="number" step="0.50" min="0" id="manualSaleValor" value="2.50" class="arcade-input">
+        </div>
+        <div class="form-group">
+          <label for="manualSaleOrigem">Origem:</label>
+          <select id="manualSaleOrigem" class="arcade-input">
+            <option value="Moedeiro Físico">Moedeiro Físico (Moeda)</option>
+            <option value="Noteiro / Cédula">Noteiro / Cédula</option>
+            <option value="Balcão / Caixa Central">Balcão / Caixa Central</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" id="btnCancelManualSale">Cancelar</button>
+        <button class="btn-confirm-fire" id="btnConfirmManualSale">REGISTRAR ENTRADA</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Configurações & Segurança -->
+  <div class="modal-overlay" id="settingsModal" aria-hidden="true">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span class="modal-icon-badge">⚙️</span>
+        <h3>CONFIGURAÇÕES & SEGURANÇA 4G</h3>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="settingsEsp01Ip">IP do Módulo Relé (ESP-01S):</label>
+          <input type="text" id="settingsEsp01Ip" value="192.168.18.99" class="arcade-input">
+          <small class="help-text">IP local onde a placa relé está conectada na rede Wi-Fi.</small>
+        </div>
+        <div class="form-group">
+          <label for="inputTokenPrice">Preço Base da Ficha (R$):</label>
+          <input type="number" id="inputTokenPrice" step="0.50" min="0.50" value="2.50" class="arcade-input">
+        </div>
+        <div class="form-group">
+          <label for="settingsBarberSplit">Divisão com a Barbearia (% do Barbeiro):</label>
+          <input type="number" id="settingsBarberSplit" min="0" max="100" value="50" class="arcade-input">
+          <small class="help-text">Porcentagem do faturamento destinada à barbearia pelo ponto comercial (Padrão: 50%).</small>
+        </div>
+        <div class="form-group">
+          <label for="settingsPin">PIN de Segurança Remoto (para 4G):</label>
+          <input type="password" id="settingsPin" value="1234" class="arcade-input" placeholder="Ex: 1234">
+          <small class="help-text">Senha numérica exigida para liberar fichas pela rede móvel.</small>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="requirePinCheckbox">
+            <span>Exigir PIN obrigatório para disparar créditos</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="inputSoundEnabled" checked>
+            <span>Habilitar Efeitos Sonoros Retrô (Sons Arcade)</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" id="btnCloseSettings">Fechar</button>
+        <button class="btn-confirm-fire" id="btnSaveSettings">Salvar Configurações</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: QR Code para Acesso no Celular 4G/5G -->
+  <div class="modal-overlay" id="qrModal" aria-hidden="true">
+    <div class="modal-box modal-qr">
+      <div class="modal-header">
+        <span class="modal-icon-badge">📱</span>
+        <h3>ACESSO REMOTO NO CELULAR (4G/5G)</h3>
+      </div>
+      <div class="modal-body text-center">
+        <p>Aponte a câmera do seu celular para o QR Code abaixo para monitorar o fliperama da barbearia de qualquer lugar:</p>
+        <div class="qr-code-wrapper">
+          <img id="qrCodeImg" src="QR_CODE_CELULAR.png" alt="QR Code de Acesso Remoto" class="qr-image" onerror="this.src='https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(window.location.href)">
+        </div>
+        <div class="qr-url-box">
+          <input type="text" id="tunnelUrlInput" readonly class="arcade-input font-mono text-center" value="Carregando link 4G...">
+          <button class="btn-micro btn-copy" id="btnCopyTunnelUrl">Copiar Link</button>
+        </div>
+        <div class="modal-highlight-box" style="margin-top: 1rem;">
+          <span>🔒 PIN de Acesso Padrão: <strong>1234</strong></span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" id="btnCloseQrModal">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="app.js"></script>
+</body>
+</html>

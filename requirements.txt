@@ -1,0 +1,2 @@
+# DG TECH ARCADE - Dependencias do Servidor
+# O server.py utiliza modulos nativos do Python 3 (urllib, http.server, json, threading)
