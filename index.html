@@ -296,6 +296,9 @@
             <button class="btn-secondary btn-compact" id="btnPulse2Test">
               <span>⚡</span> Pulso 2 Fichas
             </button>
+            <a href="http://192.168.18.99" target="_blank" class="btn-secondary btn-compact" id="btnDirectRelayPage" style="text-decoration:none; display:inline-flex; align-items:center; justify-content:center; gap:0.35rem;" title="Abrir página direta do ESP-01S no navegador">
+              <span>🌐</span> Abrir Placa Wi-Fi
+            </a>
           </div>
 
           <!-- Feed de Eventos do Hardware -->
@@ -656,11 +659,17 @@
     </div>
   </div>
 
+  <!-- Formulário invisível para acionamento direto do relé na rede local Wi-Fi (compatível com celulares em HTTPS) -->
+  <form id="directRelayForm" action="http://192.168.18.99/credito" method="GET" target="relayHiddenFrame" style="display:none;">
+    <input type="hidden" name="quantidade" id="relayHiddenQtd" value="1">
+  </form>
+  <iframe name="relayHiddenFrame" id="relayHiddenFrame" style="display:none; width:0; height:0; border:0;"></iframe>
+
   <!-- Bibliotecas para Geração de Relatórios em PDF -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
   
-  <!-- Scripts do Sistema -->
-  <script src="app.js"></script>
+  <!-- Scripts do Sistema (Cache-busting v2.6.0) -->
+  <script src="app.js?v=2.6.0"></script>
 </body>
 </html>

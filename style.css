@@ -1126,9 +1126,11 @@ input:checked + .slider::before {
   padding: 1.5rem;
 }
 
-.modal-overlay.active {
+.modal-overlay.active,
+.modal-overlay.open {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
 }
 
 .modal-box {
@@ -1147,7 +1149,8 @@ input:checked + .slider::before {
   max-width: 650px;
 }
 
-.modal-overlay.active .modal-box {
+.modal-overlay.active .modal-box,
+.modal-overlay.open .modal-box {
   transform: scale(1);
 }
 

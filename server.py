@@ -677,7 +677,7 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
 
             with data_lock:
                 for evt in sales_data.get("events", []):
-                    if evt.get("id") == event_id:
+                    if str(evt.get("id")) == str(event_id) or str(evt.get("mp_id")) == str(event_id):
                         evt["cliente"] = novo_cliente
                         desc_parts = evt.get("descricao", "").split(" • ")
                         mp_id = evt.get("mp_id", "")

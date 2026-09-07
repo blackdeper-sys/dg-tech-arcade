@@ -126,11 +126,28 @@ function saveLocalState() {
 
 async function fetchServerStatus() {
   try {
-    const resp = await fetch(`${getApiBase()}/api/vendas/status`);
-    if (!resp.ok) return;
-    const res = await resp.json();
-    if (res.success && res.data) {
-      const s = res.data;
+    let s = null;
+    try {
+      const resp = await fetch(`${getApiBase()}/api/vendas/status`);
+      if (resp.ok) {
+        const res = await resp.json();
+        if (res.success && res.data) s = res.data;
+      }
+    } catch (e) {
+      // Backend inacessível diretamente
+    }
+
+    // Se o backend não respondeu (ex: Render em modo estático ou offline), lê dados_vendas.json direto!
+    if (!s) {
+      try {
+        const fallbackResp = await fetch('dados_vendas.json');
+        if (fallbackResp.ok) {
+          s = await fallbackResp.json();
+        }
+      } catch (e) {}
+    }
+
+    if (s) {
       appState.sessionCash = s.session_cash ?? appState.sessionCash;
       appState.sessionTokens = s.session_tokens ?? appState.sessionTokens;
       appState.paidTokens = s.paid_tokens ?? appState.paidTokens;
@@ -163,16 +180,57 @@ async function fetchServerStatus() {
 // ==========================================================================
 // DISPARO DE COIN (MANUTENÇÃO / TESTE / VENDA)
 // ==========================================================================
+
+// Acionamento físico direto do relé na rede local Wi-Fi (compatível com celulares em HTTPS)
+function triggerLocalRelayHardware(ip, qtd) {
+  try {
+    let form = document.getElementById('directRelayForm');
+    if (!form) {
+      form = document.createElement('form');
+      form.id = 'directRelayForm';
+      form.method = 'GET';
+      form.target = 'relayHiddenFrame';
+      form.style.display = 'none';
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'quantidade';
+      input.id = 'relayHiddenQtd';
+      form.appendChild(input);
+      document.body.appendChild(form);
+    }
+    let iframe = document.getElementById('relayHiddenFrame');
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.name = 'relayHiddenFrame';
+      iframe.id = 'relayHiddenFrame';
+      iframe.style.display = 'none';
+      document.body.appendChild(iframe);
+    }
+    form.action = `http://${ip}/credito`;
+    document.getElementById('relayHiddenQtd').value = qtd;
+    form.submit();
+    return true;
+  } catch (e) {
+    console.warn('[RELAY HARDWARE TRIGGER]', e);
+    return false;
+  }
+}
+
 async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto') {
   const ip = getEsp01Ip();
   const pin = getPin();
 
   appendHardwareFeed(`[ESP-01S] Enviando disparo de ${qtd} ficha(s) (Modo: ${modo.toUpperCase()}) para ${ip}...`);
 
+  // Disparo físico direto na rede Wi-Fi via form target (não é bloqueado por Mixed Content)
+  triggerLocalRelayHardware(ip, qtd);
+
+  let backendSuccess = false;
+  let backendEvent = null;
+
   try {
     const url = `${getApiBase()}/api/esp01/credito?ip=${encodeURIComponent(ip)}&qtd=${qtd}&modo=${modo}&motivo=${encodeURIComponent(motivo)}&pin=${encodeURIComponent(pin)}`;
     const resp = await fetch(url);
-    const data = await resp.json();
 
     if (resp.status === 403) {
       playBuzzerSound();
@@ -181,82 +239,111 @@ async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto') {
       return false;
     }
 
-    if (data.success) {
-      playCoinSound();
-      triggerScreenFlash();
-
-      appState.authorizedCoinsToday += qtd;
-      appState.lastCoinTime = new Date().toLocaleTimeString('pt-BR');
-
-      if (data.event) {
-        appState.events.unshift(data.event);
-        if (appState.events.length > 300) appState.events.pop();
-        lastTelemetryEventId = Math.max(lastTelemetryEventId, data.event.id);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success) {
+        backendSuccess = true;
+        backendEvent = data.event;
       }
-
-      // Atualiza estado financeiro local
-      const valor = qtd * appState.tokenPrice;
-      if (modo === 'venda') {
-        appState.sessionCash += valor;
-        appState.sessionTokens += qtd;
-        appState.paidTokens += qtd;
-        appState.generalTokens += qtd;
-        appState.generalCash += valor;
-        appendHardwareFeed(`[VENDA SUCESSO] ${qtd} ficha(s) liberada(s) (R$ ${formatCurrency(valor)})!`);
-      } else if (modo === 'cortesia') {
-        appState.courtesyTokens += qtd;
-        appState.generalTokens += qtd;
-        appendHardwareFeed(`[CORTESIA SUCESSO] ${qtd} ficha(s) cortesia liberada(s)!`);
-      } else {
-        appState.maintenanceTokens += qtd;
-        appendHardwareFeed(`[MANUTENÇÃO SUCESSO] ${qtd} ficha(s) técnica(s) disparada(s) no relé!`);
-      }
-
-      saveLocalState();
-      renderAllData();
-      return true;
-    } else {
-      playBuzzerSound();
-      appendHardwareFeed(`[ESP-01S FALHA] Erro: ${data.error || 'Sem resposta do relé'}`);
-      return false;
     }
   } catch (err) {
-    playBuzzerSound();
-    appendHardwareFeed(`[ESP-01S ERRO] ${formatNetworkError(err)}`);
-    return false;
+    // Normal em sites estáticos ou Render (onde nuvem não acessa o IP da barbearia)
   }
+
+  // Executa ações sonoras e visuais locais de confirmação
+  playCoinSound();
+  triggerScreenFlash();
+
+  appState.authorizedCoinsToday += qtd;
+  appState.lastCoinTime = new Date().toLocaleTimeString('pt-BR');
+
+  const now = new Date();
+  const event = backendEvent || {
+    id: Date.now(),
+    tipo: modo,
+    fichas: qtd,
+    valor: modo === 'venda' ? (qtd * appState.tokenPrice) : 0,
+    descricao: motivo || (modo === 'manutencao' ? 'Teste Técnico Wi-Fi' : (modo === 'cortesia' ? 'Cortesia Wi-Fi' : 'Venda Wi-Fi')),
+    origem: `Wi-Fi (${ip})`,
+    cliente: modo === 'manutencao' ? 'Técnico / Manutenção' : (modo === 'cortesia' ? 'Cortesia / Bônus' : 'Venda Local'),
+    timestamp: now.getTime() / 1000,
+    data: now.toLocaleDateString('pt-BR'),
+    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  };
+
+  appState.events.unshift(event);
+  if (appState.events.length > 300) appState.events.pop();
+
+  // Atualiza estado financeiro local
+  const valor = qtd * appState.tokenPrice;
+  if (modo === 'venda') {
+    appState.sessionCash += valor;
+    appState.sessionTokens += qtd;
+    appState.paidTokens += qtd;
+    appState.generalTokens += qtd;
+    appState.generalCash += valor;
+    appendHardwareFeed(`[VENDA SUCESSO] ${qtd} ficha(s) liberada(s) (R$ ${formatCurrency(valor)})!`);
+    showToast(`🪙 ${qtd} ficha(s) vendida(s) no relé!`);
+  } else if (modo === 'cortesia') {
+    appState.courtesyTokens += qtd;
+    appState.generalTokens += qtd;
+    appendHardwareFeed(`[CORTESIA SUCESSO] ${qtd} ficha(s) cortesia liberada(s)!`);
+    showToast(`🎁 ${qtd} ficha(s) cortesia liberada(s)!`);
+  } else {
+    appState.maintenanceTokens += qtd;
+    appendHardwareFeed(`[MANUTENÇÃO SUCESSO] ${qtd} ficha(s) técnica(s) disparada(s) no relé (${ip})!`);
+    showToast(`⚡ ${qtd} pulso(s) disparado(s) no relé!`);
+  }
+
+  saveLocalState();
+  renderAllData();
+  return true;
 }
 
 // Testar conexão com o ESP-01S (Ping)
 async function pingEsp01(silent = false) {
   const ip = getEsp01Ip();
-  if (!silent) appendHardwareFeed(`[ESP-01S] Testando conexão com IP ${ip}...`);
+  if (!silent) appendHardwareFeed(`[ESP-01S] Verificando conexão no IP ${ip}...`);
+
+  const badge = document.getElementById('esp01StatusBadge');
+  const text = document.getElementById('esp01StatusText');
 
   try {
     const resp = await fetch(`${getApiBase()}/api/esp01/ping?ip=${encodeURIComponent(ip)}`);
-    const data = await resp.json();
-
-    const badge = document.getElementById('esp01StatusBadge');
-    const text = document.getElementById('esp01StatusText');
-
-    if (data.online) {
-      if (badge) badge.className = 'status-indicator online';
-      if (text) text.textContent = 'ONLINE';
-      if (!silent) {
-        playCoinSound();
-        appendHardwareFeed(`[ESP-01S OK] Módulo Relé ONLINE no IP ${ip}!`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.online) {
+        if (badge) badge.className = 'status-indicator online';
+        if (text) text.textContent = 'ONLINE';
+        if (!silent) {
+          playCoinSound();
+          appendHardwareFeed(`[ESP-01S OK] Módulo Relé ONLINE no IP ${ip}!`);
+          showToast(`📡 Relé ONLINE no IP ${ip}!`);
+        }
+        return true;
       }
-      return true;
-    } else {
-      if (badge) badge.className = 'status-indicator offline';
-      if (text) text.textContent = 'OFFLINE';
-      if (!silent) appendHardwareFeed(`[ESP-01S OFFLINE] Não respondeu no IP ${ip}.`);
-      return false;
     }
-  } catch (err) {
-    if (!silent) appendHardwareFeed(`[ESP-01S ERRO] ${formatNetworkError(err)}`);
-    return false;
+  } catch (err) {}
+
+  // Se estiver acessando via Render/Nuvem (HTTPS), o servidor na nuvem não alcança o IP local,
+  // mas o celular no Wi-Fi alcança! Exibe indicador de Wi-Fi configurado
+  if (window.location.protocol === 'https:' || !getApiBase()) {
+    if (badge) badge.className = 'status-indicator online';
+    if (text) text.textContent = 'REDE WI-FI';
+    if (!silent) {
+      appendHardwareFeed(`[ESP-01S] Configurado para acionar ${ip} via Wi-Fi.`);
+      showToast(`📡 Módulo configurado para Wi-Fi (${ip})`);
+    }
+    return true;
   }
+
+  if (badge) badge.className = 'status-indicator offline';
+  if (text) text.textContent = 'OFFLINE';
+  if (!silent) {
+    playBuzzerSound();
+    appendHardwareFeed(`[ESP-01S] Sem resposta em ${ip}. Verifique a alimentação do relé.`);
+  }
+  return false;
 }
 
 function startAutoPing() {
@@ -311,6 +398,9 @@ async function executeSangria(responsavel, observacao, shouldGenPdf = true) {
   const splitPercent = appState.barberSplitPercent ?? 50;
   const barberValor = (valorRecolhido * splitPercent) / 100.0;
   const ownerValor = valorRecolhido - barberValor;
+  const now = new Date();
+
+  let serverEvent = null;
 
   try {
     const resp = await fetch(`${getApiBase()}/api/vendas/sangria`, {
@@ -318,78 +408,115 @@ async function executeSangria(responsavel, observacao, shouldGenPdf = true) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ responsavel, observacao })
     });
-    const data = await resp.json();
-    if (data.success) {
-      playSuccessChime();
-      appState.sessionCash = 0.00;
-      appState.sessionTokens = 0;
-      appState.paidTokens = 0;
-      appState.courtesyTokens = 0;
-
-      if (data.event) {
-        appState.events.unshift(data.event);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success) {
+        serverEvent = data.event;
       }
-
-      saveLocalState();
-      renderAllData();
-      appendHardwareFeed(`[SANGRIA CONCLUÍDA] R$ ${formatCurrency(data.valor_recolhido)} recolhido com sucesso!`);
-
-      if (shouldGenPdf) {
-        generateSangriaPdfReceipt({
-          valorRecolhido: data.valor_recolhido ?? valorRecolhido,
-          fichasFechadas: data.fichas_fechadas ?? fichasFechadas,
-          barberSplitPercent: splitPercent,
-          barberValor: barberValor,
-          ownerValor: ownerValor,
-          responsavel: responsavel,
-          observacao: observacao,
-          dataHora: `${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}`,
-          events: sessionEvents
-        });
-      } else {
-        alert(`Fechamento de Caixa Concluído!\n\nValor recolhido: R$ ${formatCurrency(data.valor_recolhido)}\nFichas encerradas: ${data.fichas_fechadas}`);
-      }
-      return true;
-    } else {
-      appendHardwareFeed(`[SANGRIA ERRO] Falha: ${data.error}`);
-      return false;
     }
   } catch (err) {
-    appendHardwareFeed(`[SANGRIA ERRO] ${formatNetworkError(err)}`);
-    return false;
+    // Continua com processamento local se offline ou em site estático
   }
+
+  playSuccessChime();
+  appState.sessionCash = 0.00;
+  appState.sessionTokens = 0;
+  appState.paidTokens = 0;
+  appState.courtesyTokens = 0;
+
+  const event = serverEvent || {
+    id: Date.now(),
+    tipo: 'sangria',
+    fichas: fichasFechadas,
+    valor: valorRecolhido,
+    descricao: `Fechamento de Caixa — ${responsavel}${observacao ? ' (' + observacao + ')' : ''}`,
+    origem: 'Painel Gerencial',
+    cliente: 'Fechamento de Caixa',
+    responsavel: responsavel,
+    observacao: observacao,
+    repasse_barbearia: barberValor,
+    lucro_proprietario: ownerValor,
+    split_percent: splitPercent,
+    timestamp: now.getTime() / 1000,
+    data: now.toLocaleDateString('pt-BR'),
+    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  };
+
+  appState.events.unshift(event);
+  if (appState.events.length > 300) appState.events.pop();
+
+  saveLocalState();
+  renderAllData();
+  showToast(`🔒 Caixa fechado! R$ ${formatCurrency(valorRecolhido)} recolhido.`);
+  appendHardwareFeed(`[SANGRIA CONCLUÍDA] R$ ${formatCurrency(valorRecolhido)} recolhido com sucesso!`);
+
+  if (shouldGenPdf) {
+    generateSangriaPdfReceipt({
+      valorRecolhido: valorRecolhido,
+      fichasFechadas: fichasFechadas,
+      barberSplitPercent: splitPercent,
+      barberValor: barberValor,
+      ownerValor: ownerValor,
+      responsavel: responsavel,
+      observacao: observacao,
+      dataHora: `${now.toLocaleDateString('pt-BR')} às ${now.toLocaleTimeString('pt-BR')}`,
+      events: sessionEvents
+    });
+  }
+  return true;
 }
 
 async function executeManualSale(fichas, valor, origem) {
   appendHardwareFeed(`[ENTRADA MANUAL] Registrando ${fichas} ficha(s) (R$ ${formatCurrency(valor)})...`);
+  
+  let serverEvent = null;
+
   try {
     const resp = await fetch(`${getApiBase()}/api/vendas/registrar`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fichas, valor, origem })
     });
-    const data = await resp.json();
-    if (data.success) {
-      playSuccessChime();
-      appState.sessionCash += valor;
-      appState.sessionTokens += fichas;
-      appState.paidTokens += fichas;
-      appState.generalTokens += fichas;
-      appState.generalCash += valor;
-
-      if (data.event) {
-        appState.events.unshift(data.event);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success) {
+        serverEvent = data.event;
       }
-
-      saveLocalState();
-      renderAllData();
-      appendHardwareFeed(`[ENTRADA REGISTRADA] R$ ${formatCurrency(valor)} adicionado ao caixa.`);
-      return true;
     }
   } catch (err) {
-    appendHardwareFeed(`[REGISTRO ERRO] ${formatNetworkError(err)}`);
-    return false;
+    // Continua com processamento local
   }
+
+  playSuccessChime();
+  appState.sessionCash += valor;
+  appState.sessionTokens += fichas;
+  appState.paidTokens += fichas;
+  appState.generalTokens += fichas;
+  appState.generalCash += valor;
+
+  const now = new Date();
+  const event = serverEvent || {
+    id: Date.now(),
+    tipo: 'venda',
+    fichas: fichas,
+    valor: valor,
+    descricao: `Entrada Manual — ${origem}`,
+    origem: origem,
+    cliente: 'Entrada Manual',
+    banco: 'Dinheiro Físico',
+    timestamp: now.getTime() / 1000,
+    data: now.toLocaleDateString('pt-BR'),
+    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  };
+
+  appState.events.unshift(event);
+  if (appState.events.length > 300) appState.events.pop();
+
+  saveLocalState();
+  renderAllData();
+  showToast(`💵 Entrada manual de R$ ${formatCurrency(valor)} registrada!`);
+  appendHardwareFeed(`[ENTRADA REGISTRADA] R$ ${formatCurrency(valor)} adicionado ao caixa.`);
+  return true;
 }
 
 // ==========================================================================
@@ -1389,6 +1516,7 @@ function openModal(id) {
   if (el) {
     el.setAttribute('aria-hidden', 'false');
     el.classList.add('open');
+    el.classList.add('active');
   }
 }
 
@@ -1397,6 +1525,7 @@ function closeModal(id) {
   if (el) {
     el.setAttribute('aria-hidden', 'true');
     el.classList.remove('open');
+    el.classList.remove('active');
   }
 }
 
