@@ -335,6 +335,14 @@
               </div>
             </button>
 
+            <button class="btn-large-action btn-gold-glow" id="btnOpenPdfReportModal">
+              <span class="action-icon">📄</span>
+              <div class="action-texts">
+                <strong>Baixar Relatório em PDF</strong>
+                <small>Organizado por data, hora e valor</small>
+              </div>
+            </button>
+
             <button class="btn-large-action btn-secondary-glow" id="btnExportCsv">
               <span class="action-icon">📥</span>
               <div class="action-texts">
@@ -469,10 +477,74 @@
           <label for="sangriaObservacao">Observações (opcional):</label>
           <input type="text" id="sangriaObservacao" class="arcade-input" placeholder="Ex: Retirada quinzenal para depósito">
         </div>
+        <div class="form-group" style="margin-top: 0.75rem; background: #101018; padding: 0.6rem 0.8rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+          <label class="checkbox-label" style="margin: 0; cursor: pointer;">
+            <input type="checkbox" id="sangriaGeneratePdfCheckbox" checked>
+            <span style="font-weight: 600; color: var(--coin-gold);">📄 Baixar Comprovante em PDF do Fechamento</span>
+          </label>
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn-cancel" id="btnCancelSangria">Cancelar</button>
         <button class="btn-confirm-fire" id="btnConfirmSangria">CONFIRMAR FECHAMENTO</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Emissão de Relatório Financeiro em PDF -->
+  <div class="modal-overlay" id="pdfReportModal" aria-hidden="true">
+    <div class="modal-box modal-large">
+      <div class="modal-header">
+        <span class="modal-icon-badge">📄</span>
+        <h3>RELATÓRIO FINANCEIRO EM PDF</h3>
+      </div>
+      <div class="modal-body">
+        <p>Gere um relatório organizado e formatado para impressão ou arquivamento com todas as movimentações financeiras.</p>
+        
+        <!-- Resumo Rápido do Caixa Atual -->
+        <div class="sangria-summary-box" style="margin-bottom: 1.2rem;">
+          <div class="sangria-row">
+            <span>Caixa da Sessão Atual:</span>
+            <strong class="text-green font-mono" id="pdfModalSessionCash">R$ 0,00</strong>
+          </div>
+          <div class="sangria-row">
+            <span>Faturamento Total Acumulado:</span>
+            <strong class="text-yellow font-mono" id="pdfModalGeneralCash">R$ 0,00</strong>
+          </div>
+          <div class="sangria-row">
+            <span>Total de Registros no Sistema:</span>
+            <strong class="text-blue font-mono" id="pdfModalTotalEvents">0 transações</strong>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="pdfReportScope">Escopo do Relatório:</label>
+          <select id="pdfReportScope" class="arcade-input">
+            <option value="session">Caixa da Sessão Atual (Vendas desde a última sangria)</option>
+            <option value="all" selected>Histórico Completo (Todas as vendas e transações)</option>
+            <option value="pix_only">Somente Vendas Pix Barbearia</option>
+            <option value="sangria_only">Somente Fechamentos de Caixa / Sangrias</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="pdfReportSort">Ordenação dos Registros:</label>
+          <select id="pdfReportSort" class="arcade-input">
+            <option value="desc" selected>Data e Hora: Mais Recentes Primeiro (Padrão)</option>
+            <option value="asc">Data e Hora: Mais Antigos Primeiro (Cronológica)</option>
+            <option value="value_desc">Maior Valor (R$) Primeiro</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="pdfReportResponsavel">Responsável pela Emissão:</label>
+          <input type="text" id="pdfReportResponsavel" value="Daniel" class="arcade-input" placeholder="Seu nome">
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; gap: 0.6rem; justify-content: flex-end; flex-wrap: wrap;">
+        <button class="btn-cancel" id="btnCancelPdfReport">Cancelar</button>
+        <button class="btn-secondary" id="btnPrintPdfReport" style="padding: 0.6rem 1.1rem;">🖨️ Visualizar / Imprimir</button>
+        <button class="btn-confirm-fire" id="btnGeneratePdfDownload" style="background: linear-gradient(135deg, #00c853, #009624); border-color: #00e676;">📥 BAIXAR PDF AGORA</button>
       </div>
     </div>
   </div>
@@ -583,7 +655,11 @@
     </div>
   </div>
 
-  <!-- Scripts -->
+  <!-- Bibliotecas para Geração de Relatórios em PDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+  
+  <!-- Scripts do Sistema -->
   <script src="app.js"></script>
 </body>
 </html>

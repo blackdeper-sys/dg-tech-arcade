@@ -1999,6 +1999,17 @@ input:checked + .slider::before {
   box-shadow: 0 0 15px rgba(0, 210, 255, 0.2);
 }
 
+.btn-gold-glow:hover {
+  background: rgba(255, 209, 102, 0.15);
+  border-color: var(--coin-gold);
+  box-shadow: 0 0 15px rgba(255, 209, 102, 0.35);
+}
+
+.modal-box.modal-large {
+  max-width: 580px;
+  width: 95%;
+}
+
 /* Badges de Auditoria */
 .event-badge {
   display: inline-block;

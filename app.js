@@ -301,8 +301,17 @@ function startTelemetryPolling() {
 // ==========================================================================
 // AÇÕES FINANCEIRAS: SANGRIA E REGISTRO MANUAL
 // ==========================================================================
-async function executeSangria(responsavel, observacao) {
+async function executeSangria(responsavel, observacao, shouldGenPdf = true) {
   appendHardwareFeed(`[SANGRIA] Realizando fechamento de caixa por ${responsavel}...`);
+
+  // Captura o estado da sessão atual antes de zerar
+  const sessionEvents = getSessionEvents();
+  const valorRecolhido = appState.sessionCash;
+  const fichasFechadas = appState.sessionTokens;
+  const splitPercent = appState.barberSplitPercent ?? 50;
+  const barberValor = (valorRecolhido * splitPercent) / 100.0;
+  const ownerValor = valorRecolhido - barberValor;
+
   try {
     const resp = await fetch(`${getApiBase()}/api/vendas/sangria`, {
       method: 'POST',
@@ -324,7 +333,22 @@ async function executeSangria(responsavel, observacao) {
       saveLocalState();
       renderAllData();
       appendHardwareFeed(`[SANGRIA CONCLUÍDA] R$ ${formatCurrency(data.valor_recolhido)} recolhido com sucesso!`);
-      alert(`Fechamento de Caixa Concluído!\n\nValor recolhido: R$ ${formatCurrency(data.valor_recolhido)}\nFichas encerradas: ${data.fichas_fechadas}`);
+
+      if (shouldGenPdf) {
+        generateSangriaPdfReceipt({
+          valorRecolhido: data.valor_recolhido ?? valorRecolhido,
+          fichasFechadas: data.fichas_fechadas ?? fichasFechadas,
+          barberSplitPercent: splitPercent,
+          barberValor: barberValor,
+          ownerValor: ownerValor,
+          responsavel: responsavel,
+          observacao: observacao,
+          dataHora: `${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}`,
+          events: sessionEvents
+        });
+      } else {
+        alert(`Fechamento de Caixa Concluído!\n\nValor recolhido: R$ ${formatCurrency(data.valor_recolhido)}\nFichas encerradas: ${data.fichas_fechadas}`);
+      }
       return true;
     } else {
       appendHardwareFeed(`[SANGRIA ERRO] Falha: ${data.error}`);
@@ -484,6 +508,34 @@ function renderLogsTable() {
   }).join('');
 }
 
+// ==========================================================================
+// RELATÓRIOS: CSV & PDF GERENCIAL ORGANIZADO POR DATA, HORA E VALOR
+// ==========================================================================
+
+function getSessionEvents() {
+  const list = [];
+  for (const evt of (appState.events || [])) {
+    if (evt.tipo === 'sangria') {
+      break;
+    }
+    list.push(evt);
+  }
+  return list;
+}
+
+function formatEventTypeLabel(evt) {
+  if (evt.tipo === 'venda') {
+    if (evt.origem && (evt.origem.includes('Mercado Pago') || evt.origem.includes('Pix'))) {
+      return 'Pix Barbearia';
+    }
+    return 'Venda Manual';
+  }
+  if (evt.tipo === 'sangria') return 'Fechamento / Sangria';
+  if (evt.tipo === 'cortesia') return 'Cortesia';
+  if (evt.tipo === 'manutencao') return 'Manutenção Técnica';
+  return evt.tipo ? evt.tipo.toUpperCase() : 'OUTRO';
+}
+
 // Exportar Tabela para Arquivo CSV
 function exportLogsCsv() {
   if (!appState.events || appState.events.length === 0) {
@@ -515,6 +567,486 @@ function exportLogsCsv() {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   appendHardwareFeed('[CSV] Relatório financeiro exportado com sucesso.');
+}
+
+// Geração de Relatório Profissional em PDF (Organizado por Data, Hora e Valor)
+function generatePdfReport({ scope = 'all', sort = 'desc', responsavel = 'Daniel', mode = 'download' } = {}) {
+  let targetEvents = [];
+  let scopeTitle = 'Histórico Geral de Transações';
+
+  if (scope === 'session') {
+    targetEvents = getSessionEvents();
+    scopeTitle = 'Caixa da Sessão Atual (Aberta)';
+  } else if (scope === 'pix_only') {
+    targetEvents = (appState.events || []).filter(e => e.tipo === 'venda' && (e.origem?.includes('Mercado Pago') || e.origem?.includes('Pix')));
+    scopeTitle = 'Vendas Pix da Barbearia (Mercado Pago)';
+  } else if (scope === 'sangria_only') {
+    targetEvents = (appState.events || []).filter(e => e.tipo === 'sangria');
+    scopeTitle = 'Histórico de Fechamentos de Caixa (Sangrias)';
+  } else {
+    targetEvents = [...(appState.events || [])];
+    scopeTitle = 'Histórico Completo de Transações';
+  }
+
+  if (targetEvents.length === 0) {
+    alert('Nenhuma transação encontrada para o escopo selecionado.');
+    return;
+  }
+
+  // Ordenação por Data, Hora ou Valor
+  targetEvents.sort((a, b) => {
+    if (sort === 'asc') {
+      return (a.timestamp || 0) - (b.timestamp || 0);
+    } else if (sort === 'value_desc') {
+      return (b.valor || 0) - (a.valor || 0);
+    }
+    return (b.timestamp || 0) - (a.timestamp || 0); // Padrão: mais recente primeiro
+  });
+
+  // Cálculos de Totais Financeiros
+  const totalVendasValor = targetEvents
+    .filter(e => e.tipo === 'venda')
+    .reduce((acc, e) => acc + (parseFloat(e.valor) || 0), 0);
+  const totalVendasFichas = targetEvents
+    .filter(e => e.tipo === 'venda')
+    .reduce((acc, e) => acc + (parseInt(e.fichas) || 0), 0);
+  const totalCortesias = targetEvents
+    .filter(e => e.tipo === 'cortesia')
+    .reduce((acc, e) => acc + (parseInt(e.fichas) || 0), 0);
+  const totalManutencoes = targetEvents
+    .filter(e => e.tipo === 'manutencao')
+    .reduce((acc, e) => acc + (parseInt(e.fichas) || 0), 0);
+
+  const splitPercent = appState.barberSplitPercent ?? 50;
+  const repasseBarbearia = (totalVendasValor * splitPercent) / 100.0;
+  const lucroProprietario = totalVendasValor - repasseBarbearia;
+
+  const dataHoraEmissao = `${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}`;
+
+  // Se a biblioteca jsPDF não estiver carregada (offline/bloqueio), usa impressão nativa formatada
+  const jsPDFConstructor = window.jspdf?.jsPDF;
+  if (!jsPDFConstructor) {
+    fallbackHtmlPrintReport({
+      scopeTitle,
+      responsavel,
+      dataHoraEmissao,
+      targetEvents,
+      totalVendasValor,
+      totalVendasFichas,
+      repasseBarbearia,
+      lucroProprietario,
+      splitPercent,
+      totalCortesias,
+      totalManutencoes
+    });
+    return;
+  }
+
+  const doc = new jsPDFConstructor({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  // 1. Cabeçalho Corporativo e Elegante
+  doc.setFillColor(15, 23, 42); // Navy Slate
+  doc.rect(0, 0, pageWidth, 26, 'F');
+  doc.setFillColor(255, 30, 66); // Vermelho Arcade
+  doc.rect(0, 26, pageWidth, 2, 'F');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.setTextColor(255, 255, 255);
+  doc.text('DG TECH ARCADE', 14, 11);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(203, 213, 225);
+  doc.text('RELATÓRIO FINANCEIRO & AUDITORIA DE VENDAS', 14, 17);
+  doc.text('Ponto: Barbearia • Telemetria Pix Nuvem (24h)', 14, 22);
+
+  // Metadados no canto direito
+  doc.setFontSize(7.5);
+  doc.setTextColor(226, 232, 240);
+  doc.text(`Emissão: ${dataHoraEmissao}`, pageWidth - 14, 11, { align: 'right' });
+  doc.text(`Responsável: ${responsavel}`, pageWidth - 14, 16, { align: 'right' });
+  doc.text(`Escopo: ${scopeTitle}`, pageWidth - 14, 21, { align: 'right' });
+
+  // 2. Quadro de Indicadores / Cards de Resumo Financeiro
+  const startY = 33;
+  const cardWidth = (pageWidth - 28 - 9) / 4;
+  const cardHeight = 17;
+
+  // Card 1: Faturamento Total
+  doc.setFillColor(240, 253, 244);
+  doc.setDrawColor(34, 197, 94);
+  doc.roundedRect(14, startY, cardWidth, cardHeight, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(22, 101, 52);
+  doc.text('FATURAMENTO TOTAL', 14 + cardWidth / 2, startY + 4.5, { align: 'center' });
+  doc.setFontSize(10.5);
+  doc.setTextColor(21, 128, 61);
+  doc.text(`R$ ${formatCurrency(totalVendasValor)}`, 14 + cardWidth / 2, startY + 10.5, { align: 'center' });
+  doc.setFontSize(6);
+  doc.setTextColor(100, 116, 139);
+  doc.text(`${totalVendasFichas} fichas vendidas`, 14 + cardWidth / 2, startY + 14.5, { align: 'center' });
+
+  // Card 2: Repasse Barbearia (50%)
+  const c2X = 14 + cardWidth + 3;
+  doc.setFillColor(254, 252, 232);
+  doc.setDrawColor(234, 179, 8);
+  doc.roundedRect(c2X, startY, cardWidth, cardHeight, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(133, 77, 14);
+  doc.text(`BARBEARIA (${splitPercent}%)`, c2X + cardWidth / 2, startY + 4.5, { align: 'center' });
+  doc.setFontSize(10.5);
+  doc.setTextColor(161, 98, 7);
+  doc.text(`R$ ${formatCurrency(repasseBarbearia)}`, c2X + cardWidth / 2, startY + 10.5, { align: 'center' });
+  doc.setFontSize(6);
+  doc.setTextColor(100, 116, 139);
+  doc.text('Repasse do ponto comercial', c2X + cardWidth / 2, startY + 14.5, { align: 'center' });
+
+  // Card 3: Seu Lucro Líquido (50%)
+  const c3X = c2X + cardWidth + 3;
+  doc.setFillColor(239, 246, 255);
+  doc.setDrawColor(59, 130, 246);
+  doc.roundedRect(c3X, startY, cardWidth, cardHeight, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(30, 64, 175);
+  doc.text(`SEU LUCRO (${100 - splitPercent}%)`, c3X + cardWidth / 2, startY + 4.5, { align: 'center' });
+  doc.setFontSize(10.5);
+  doc.setTextColor(29, 78, 216);
+  doc.text(`R$ ${formatCurrency(lucroProprietario)}`, c3X + cardWidth / 2, startY + 10.5, { align: 'center' });
+  doc.setFontSize(6);
+  doc.setTextColor(100, 116, 139);
+  doc.text('Lucro líquido fliperama', c3X + cardWidth / 2, startY + 14.5, { align: 'center' });
+
+  // Card 4: Fichas & Movimentação
+  const c4X = c3X + cardWidth + 3;
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(c4X, startY, cardWidth, cardHeight, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(51, 65, 85);
+  doc.text('MOVIMENTAÇÃO TOTAL', c4X + cardWidth / 2, startY + 4.5, { align: 'center' });
+  doc.setFontSize(10.5);
+  doc.setTextColor(30, 41, 59);
+  doc.text(`${totalVendasFichas + totalCortesias} Fichas`, c4X + cardWidth / 2, startY + 10.5, { align: 'center' });
+  doc.setFontSize(6);
+  doc.setTextColor(100, 116, 139);
+  doc.text(`${totalManutencoes} testes • ${totalCortesias} cortesias`, c4X + cardWidth / 2, startY + 14.5, { align: 'center' });
+
+  // 3. Tabela de Transações Organizada por Data, Hora e Valor
+  const tableRows = targetEvents.map(evt => {
+    const dataStr = evt.data || '--/--/----';
+    const horaStr = evt.hora || '--:--:--';
+    const valorStr = (evt.valor && evt.valor > 0) ? `R$ ${formatCurrency(evt.valor)}` : '—';
+    const fichasStr = evt.fichas ? `${evt.fichas} un` : '—';
+    const tipoStr = formatEventTypeLabel(evt);
+    const descStr = evt.descricao || evt.origem || 'Operação Arcade';
+    return [dataStr, horaStr, valorStr, fichasStr, tipoStr, descStr];
+  });
+
+  doc.autoTable({
+    head: [['DATA', 'HORA', 'VALOR', 'FICHAS', 'TIPO', 'DESCRIÇÃO / DETALHES DO EVENTO']],
+    body: tableRows,
+    foot: [['TOTAL', '', `R$ ${formatCurrency(totalVendasValor)}`, `${totalVendasFichas} un`, '', `${targetEvents.length} registro(s) listado(s)`]],
+    startY: 55,
+    margin: { left: 14, right: 14, bottom: 18 },
+    styles: {
+      font: 'helvetica',
+      fontSize: 7.8,
+      cellPadding: 2.2,
+      overflow: 'linebreak',
+      valign: 'middle'
+    },
+    headStyles: {
+      fillColor: [15, 23, 42],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      fontSize: 8,
+      halign: 'left'
+    },
+    columnStyles: {
+      0: { cellWidth: 20, halign: 'center', fontStyle: 'bold' }, // Data
+      1: { cellWidth: 18, halign: 'center' }, // Hora
+      2: { cellWidth: 24, halign: 'right', fontStyle: 'bold' }, // Valor
+      3: { cellWidth: 15, halign: 'center' }, // Fichas
+      4: { cellWidth: 25, halign: 'center' }, // Tipo
+      5: { cellWidth: 'auto', halign: 'left' } // Descrição
+    },
+    alternateRowStyles: {
+      fillColor: [248, 250, 252]
+    },
+    footStyles: {
+      fillColor: [241, 245, 249],
+      textColor: [15, 23, 42],
+      fontStyle: 'bold',
+      fontSize: 8
+    },
+    didParseCell: function(data) {
+      if (data.section === 'body') {
+        const rawRow = targetEvents[data.row.index];
+        if (rawRow) {
+          if (data.column.index === 2 && rawRow.valor > 0) {
+            data.cell.styles.textColor = [22, 101, 52];
+          }
+          if (rawRow.tipo === 'sangria') {
+            data.cell.styles.fillColor = [254, 242, 242];
+            if (data.column.index === 4) {
+              data.cell.styles.textColor = [185, 28, 28];
+              data.cell.styles.fontStyle = 'bold';
+            }
+          }
+        }
+      }
+    },
+    didDrawPage: function(data) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184);
+      doc.text(
+        'DG Tech Arcade • Relatório gerencial emitido para prestação de contas com a barbearia',
+        14,
+        pageHeight - 8
+      );
+    }
+  });
+
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184);
+    doc.text(`Página ${i} de ${totalPages}`, pageWidth - 14, pageHeight - 8, { align: 'right' });
+  }
+
+  const cleanDate = new Date().toISOString().slice(0, 10);
+  const fileName = `Relatorio_DG_Arcade_${scope}_${cleanDate}.pdf`;
+
+  if (mode === 'print') {
+    doc.autoPrint();
+    const pdfBlob = doc.output('blob');
+    const blobUrl = URL.createObjectURL(pdfBlob);
+    window.open(blobUrl, '_blank');
+  } else {
+    doc.save(fileName);
+    showToast('📄 Relatório em PDF baixado com sucesso!');
+    appendHardwareFeed(`[PDF] Relatório '${fileName}' gerado com sucesso.`);
+  }
+}
+
+// Geração de Comprovante de Fechamento de Caixa / Sangria em PDF
+function generateSangriaPdfReceipt(data) {
+  const jsPDFConstructor = window.jspdf?.jsPDF;
+  if (!jsPDFConstructor) {
+    alert(`Fechamento de Caixa Concluído!\n\nValor recolhido: R$ ${formatCurrency(data.valorRecolhido)}\nFichas encerradas: ${data.fichasFechadas}`);
+    return;
+  }
+
+  const doc = new jsPDFConstructor({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  // Cabeçalho Oficial
+  doc.setFillColor(15, 23, 42);
+  doc.rect(0, 0, pageWidth, 28, 'F');
+  doc.setFillColor(255, 30, 66);
+  doc.rect(0, 28, pageWidth, 2.5, 'F');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.setTextColor(255, 255, 255);
+  doc.text('DG TECH ARCADE', 14, 12);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(203, 213, 225);
+  doc.text('COMPROVANTE OFICIAL DE FECHAMENTO DE CAIXA & SANGRIA', 14, 18);
+  doc.text('Acerto de Contas Fliperama & Barbearia', 14, 23);
+
+  doc.setFontSize(8);
+  doc.setTextColor(255, 255, 255);
+  doc.text(`Data/Hora: ${data.dataHora}`, pageWidth - 14, 14, { align: 'right' });
+  doc.text(`Responsável: ${data.responsavel}`, pageWidth - 14, 20, { align: 'right' });
+
+  // Quadro de Valores
+  const y = 37;
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(14, y, pageWidth - 28, 36, 3, 3, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(15, 23, 42);
+  doc.text('RESUMO DO RECOLHIMENTO DESTE CAIXA', 20, y + 7.5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(71, 85, 105);
+  doc.text('Total em Dinheiro Recolhido:', 20, y + 15);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(22, 101, 52);
+  doc.text(`R$ ${formatCurrency(data.valorRecolhido)}`, 80, y + 15);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(71, 85, 105);
+  doc.text('Fichas Encerradas no Período:', 20, y + 22);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(15, 23, 42);
+  doc.text(`${data.fichasFechadas} fichas`, 80, y + 22);
+
+  // Divisão dos 50%
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(71, 85, 105);
+  doc.text(`Repasse Barbearia (${data.barberSplitPercent}%):`, 110, y + 15);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(161, 98, 7);
+  doc.text(`R$ ${formatCurrency(data.barberValor)}`, pageWidth - 20, y + 15, { align: 'right' });
+
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(71, 85, 105);
+  doc.text(`Lucro Proprietário (${100 - data.barberSplitPercent}%):`, 110, y + 22);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(29, 78, 216);
+  doc.text(`R$ ${formatCurrency(data.ownerValor)}`, pageWidth - 20, y + 22, { align: 'right' });
+
+  if (data.observacao) {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Observações: ${data.observacao}`, 20, y + 30);
+  }
+
+  // Tabela com as vendas daquela sessão
+  const tableData = (data.events || []).map(e => [
+    e.data || '--/--/----',
+    e.hora || '--:--',
+    e.valor && e.valor > 0 ? `R$ ${formatCurrency(e.valor)}` : '—',
+    e.fichas ? `${e.fichas} un` : '—',
+    formatEventTypeLabel(e),
+    e.descricao || 'Venda Arcade'
+  ]);
+
+  if (tableData.length > 0) {
+    doc.autoTable({
+      head: [['DATA', 'HORA', 'VALOR', 'FICHAS', 'TIPO', 'DISCRIMINAÇÃO DAS VENDAS DESTE CAIXA']],
+      body: tableData,
+      startY: y + 42,
+      margin: { left: 14, right: 14, bottom: 42 },
+      styles: { font: 'helvetica', fontSize: 7.5, cellPadding: 2 },
+      headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+      columnStyles: {
+        0: { cellWidth: 20, halign: 'center' },
+        1: { cellWidth: 18, halign: 'center' },
+        2: { cellWidth: 24, halign: 'right', fontStyle: 'bold' },
+        3: { cellWidth: 15, halign: 'center' },
+        4: { cellWidth: 25, halign: 'center' },
+        5: { cellWidth: 'auto' }
+      }
+    });
+  }
+
+  // Linhas de Assinatura no rodapé
+  const finalY = doc.lastAutoTable ? Math.max(doc.lastAutoTable.finalY + 22, pageHeight - 32) : pageHeight - 32;
+
+  doc.setDrawColor(148, 163, 184);
+  doc.line(20, finalY, 85, finalY);
+  doc.line(pageWidth - 85, finalY, pageWidth - 20, finalY);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(71, 85, 105);
+  doc.text(`${data.responsavel} (Operador / Proprietário)`, 52.5, finalY + 4, { align: 'center' });
+  doc.text('Responsável Barbearia (Ponto Comercial)', pageWidth - 52.5, finalY + 4, { align: 'center' });
+
+  const fileName = `Comprovante_Fechamento_${new Date().toISOString().slice(0, 10)}.pdf`;
+  doc.save(fileName);
+  showToast('📄 Comprovante do fechamento baixado em PDF!');
+  appendHardwareFeed(`[PDF] Comprovante de sangria '${fileName}' gerado com sucesso.`);
+}
+
+// Fallback caso a biblioteca externa jsPDF não esteja acessível
+function fallbackHtmlPrintReport(info) {
+  const win = window.open('', '_blank');
+  if (!win) {
+    alert('Por favor, permita pop-ups para visualizar o relatório para impressão.');
+    return;
+  }
+  const rowsHtml = info.targetEvents.map(e => `
+    <tr>
+      <td style="text-align:center;">${e.data || '--'}</td>
+      <td style="text-align:center;">${e.hora || '--'}</td>
+      <td style="text-align:right; font-weight:bold; color:#15803d;">${e.valor ? 'R$ ' + formatCurrency(e.valor) : '—'}</td>
+      <td style="text-align:center;">${e.fichas ? e.fichas + ' un' : '—'}</td>
+      <td style="text-align:center;">${formatEventTypeLabel(e)}</td>
+      <td>${escapeHtml(e.descricao || '')}</td>
+    </tr>
+  `).join('');
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="UTF-8">
+      <title>Relatório Financeiro DG Tech Arcade</title>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; color: #1e293b; }
+        .header { border-bottom: 3px solid #ff1e42; padding-bottom: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
+        h1 { margin: 0; font-size: 22px; color: #0f172a; }
+        .cards { display: flex; gap: 12px; margin-bottom: 20px; }
+        .card { flex: 1; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; text-align: center; background: #f8fafc; }
+        .card strong { font-size: 16px; display: block; margin: 4px 0; color: #0f172a; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+        th, td { border: 1px solid #cbd5e1; padding: 6px 8px; }
+        th { background: #0f172a; color: #fff; }
+        tr:nth-child(even) { background: #f8fafc; }
+        @media print { .no-print { display: none; } }
+      </style>
+    </head>
+    <body>
+      <div class="no-print" style="margin-bottom:15px;">
+        <button onclick="window.print()" style="padding:8px 16px; background:#059669; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🖨️ Imprimir / Salvar como PDF</button>
+      </div>
+      <div class="header">
+        <div>
+          <h1>DG TECH ARCADE</h1>
+          <div style="font-size:13px; color:#64748b;">Relatório de Vendas e Caixa • Barbearia</div>
+        </div>
+        <div style="text-align:right; font-size:11px; color:#475569;">
+          <div>Emissão: ${info.dataHoraEmissao}</div>
+          <div>Responsável: ${info.responsavel}</div>
+          <div>Escopo: ${info.scopeTitle}</div>
+        </div>
+      </div>
+      <div class="cards">
+        <div class="card"><small>FATURAMENTO TOTAL</small><strong>R$ ${formatCurrency(info.totalVendasValor)}</strong><small>${info.totalVendasFichas} fichas vendidas</small></div>
+        <div class="card"><small>BARBEARIA (${info.splitPercent}%)</small><strong>R$ ${formatCurrency(info.repasseBarbearia)}</strong><small>Repasse do ponto</small></div>
+        <div class="card"><small>SEU LUCRO (${100 - info.splitPercent}%)</small><strong>R$ ${formatCurrency(info.lucroProprietario)}</strong><small>Lucro líquido</small></div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>DATA</th><th>HORA</th><th>VALOR</th><th>FICHAS</th><th>TIPO</th><th>DESCRIÇÃO</th></tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </body>
+    </html>
+  `);
+  win.document.close();
 }
 
 // ==========================================================================
@@ -611,8 +1143,9 @@ function initEventListeners() {
   document.getElementById('btnConfirmSangria')?.addEventListener('click', async () => {
     const resp = document.getElementById('sangriaResponsavel')?.value || 'Operador';
     const obs = document.getElementById('sangriaObservacao')?.value || '';
+    const shouldGenPdf = document.getElementById('sangriaGeneratePdfCheckbox')?.checked ?? true;
     closeModal('sangriaModal');
-    await executeSangria(resp, obs);
+    await executeSangria(resp, obs, shouldGenPdf);
   });
 
   // 7. Modal de Registro Manual
@@ -752,7 +1285,34 @@ function initEventListeners() {
     }
   });
 
-  // 11. Exportar CSV
+  // 11. Relatório em PDF & Exportação CSV
+  document.getElementById('btnOpenPdfReportModal')?.addEventListener('click', () => {
+    setText('pdfModalSessionCash', `R$ ${formatCurrency(appState.sessionCash)}`);
+    setText('pdfModalGeneralCash', `R$ ${formatCurrency(appState.generalCash)}`);
+    setText('pdfModalTotalEvents', `${appState.events.length} transações`);
+    const respInput = document.getElementById('pdfReportResponsavel');
+    if (respInput && !respInput.value) respInput.value = 'Daniel';
+    openModal('pdfReportModal');
+  });
+
+  document.getElementById('btnCancelPdfReport')?.addEventListener('click', () => closeModal('pdfReportModal'));
+
+  document.getElementById('btnGeneratePdfDownload')?.addEventListener('click', () => {
+    const scope = document.getElementById('pdfReportScope')?.value || 'all';
+    const sort = document.getElementById('pdfReportSort')?.value || 'desc';
+    const responsavel = document.getElementById('pdfReportResponsavel')?.value || 'Daniel';
+    closeModal('pdfReportModal');
+    generatePdfReport({ scope, sort, responsavel, mode: 'download' });
+  });
+
+  document.getElementById('btnPrintPdfReport')?.addEventListener('click', () => {
+    const scope = document.getElementById('pdfReportScope')?.value || 'all';
+    const sort = document.getElementById('pdfReportSort')?.value || 'desc';
+    const responsavel = document.getElementById('pdfReportResponsavel')?.value || 'Daniel';
+    closeModal('pdfReportModal');
+    generatePdfReport({ scope, sort, responsavel, mode: 'print' });
+  });
+
   document.getElementById('btnExportCsv')?.addEventListener('click', exportLogsCsv);
 
   // 12. Filtros da Tabela de Logs
