@@ -2033,6 +2033,36 @@ input:checked + .slider::before {
   border: 1px solid rgba(0, 210, 255, 0.4);
 }
 
+.client-name-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.client-name-text {
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.btn-edit-client {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.72rem;
+  padding: 1px 4px;
+  opacity: 0.7;
+  transition: opacity 0.2s, transform 0.1s, background 0.2s;
+}
+
+.btn-edit-client:hover {
+  opacity: 1;
+  background: rgba(255, 209, 102, 0.25);
+  border-color: var(--coin-gold);
+  transform: scale(1.1);
+}
+
 .badge-cortesia {
   background: rgba(255, 209, 102, 0.15);
   color: var(--coin-gold);

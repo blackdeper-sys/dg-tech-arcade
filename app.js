@@ -468,7 +468,7 @@ function renderLogsTable() {
   }
 
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">Nenhum registro encontrado para este filtro.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted py-4">Nenhum registro encontrado para este filtro.</td></tr>`;
     return;
   }
 
@@ -494,11 +494,18 @@ function renderLogsTable() {
 
     const valorStr = (evt.valor && evt.valor > 0) ? `R$ ${formatCurrency(evt.valor)}` : '—';
     const fichasStr = evt.fichas ? `${evt.fichas} un` : '—';
+    const clienteStr = evt.cliente || (evt.tipo === 'venda' ? (evt.banco ? `Cliente ${evt.banco}` : 'Cliente Pix') : '—');
 
     return `
       <tr>
         <td class="log-time">${evt.hora || '--:--'} <small class="text-muted">${evt.data || ''}</small></td>
         <td><span class="event-badge ${badgeClass}">${badgeLabel}</span></td>
+        <td class="log-client font-mono">
+          <div class="client-name-wrapper">
+            <span class="client-name-text">${escapeHtml(clienteStr)}</span>
+            ${evt.tipo === 'venda' ? `<button class="btn-edit-client" onclick="promptEditClientName(${evt.id})" title="Identificar / Nome do Cliente">✏️</button>` : ''}
+          </div>
+        </td>
         <td class="log-desc">${escapeHtml(evt.descricao || '')}</td>
         <td class="log-tokens font-mono">${fichasStr}</td>
         <td class="log-value font-mono text-green">${valorStr}</td>
@@ -507,6 +514,34 @@ function renderLogsTable() {
     `;
   }).join('');
 }
+
+// Identificar / Renomear Cliente de uma Venda
+async function promptEditClientName(eventId) {
+  const evt = (appState.events || []).find(e => e.id === eventId);
+  if (!evt) return;
+  const current = evt.cliente || '';
+  const novoNome = prompt('Identificação ou Nome do Cliente deste Pix:', current);
+  if (novoNome === null) return;
+
+  const trimmed = novoNome.trim();
+  evt.cliente = trimmed || (evt.banco ? `Cliente ${evt.banco}` : 'Cliente Pix');
+
+  saveLocalState();
+  renderLogsTable();
+
+  try {
+    await fetch(`${getApiBase()}/api/vendas/cliente`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: eventId, cliente: evt.cliente })
+    });
+    showToast(`👤 Cliente atualizado: ${evt.cliente}`);
+    appendHardwareFeed(`[CLIENTE] Venda #${eventId} identificada como: ${evt.cliente}`);
+  } catch (e) {
+    showToast(`👤 Nome salvo localmente!`);
+  }
+}
+window.promptEditClientName = promptEditClientName;
 
 // ==========================================================================
 // RELATÓRIOS: CSV & PDF GERENCIAL ORGANIZADO POR DATA, HORA E VALOR
@@ -747,23 +782,24 @@ function generatePdfReport({ scope = 'all', sort = 'desc', responsavel = 'Daniel
   const tableRows = targetEvents.map(evt => {
     const dataStr = evt.data || '--/--/----';
     const horaStr = evt.hora || '--:--:--';
+    const clienteStr = evt.cliente || (evt.tipo === 'venda' ? (evt.banco ? `Cliente ${evt.banco}` : 'Cliente Pix') : '—');
     const valorStr = (evt.valor && evt.valor > 0) ? `R$ ${formatCurrency(evt.valor)}` : '—';
     const fichasStr = evt.fichas ? `${evt.fichas} un` : '—';
     const tipoStr = formatEventTypeLabel(evt);
     const descStr = evt.descricao || evt.origem || 'Operação Arcade';
-    return [dataStr, horaStr, valorStr, fichasStr, tipoStr, descStr];
+    return [dataStr, horaStr, clienteStr, valorStr, fichasStr, tipoStr, descStr];
   });
 
   doc.autoTable({
-    head: [['DATA', 'HORA', 'VALOR', 'FICHAS', 'TIPO', 'DESCRIÇÃO / DETALHES DO EVENTO']],
+    head: [['DATA', 'HORA', 'CLIENTE / PAGADOR', 'VALOR', 'FICHAS', 'TIPO', 'DESCRIÇÃO / DETALHES']],
     body: tableRows,
-    foot: [['TOTAL', '', `R$ ${formatCurrency(totalVendasValor)}`, `${totalVendasFichas} un`, '', `${targetEvents.length} registro(s) listado(s)`]],
+    foot: [['TOTAL', '', '', `R$ ${formatCurrency(totalVendasValor)}`, `${totalVendasFichas} un`, '', `${targetEvents.length} registro(s) listado(s)`]],
     startY: 55,
     margin: { left: 14, right: 14, bottom: 18 },
     styles: {
       font: 'helvetica',
-      fontSize: 7.8,
-      cellPadding: 2.2,
+      fontSize: 7.2,
+      cellPadding: 2,
       overflow: 'linebreak',
       valign: 'middle'
     },
@@ -771,16 +807,17 @@ function generatePdfReport({ scope = 'all', sort = 'desc', responsavel = 'Daniel
       fillColor: [15, 23, 42],
       textColor: [255, 255, 255],
       fontStyle: 'bold',
-      fontSize: 8,
+      fontSize: 7.8,
       halign: 'left'
     },
     columnStyles: {
-      0: { cellWidth: 20, halign: 'center', fontStyle: 'bold' }, // Data
-      1: { cellWidth: 18, halign: 'center' }, // Hora
-      2: { cellWidth: 24, halign: 'right', fontStyle: 'bold' }, // Valor
-      3: { cellWidth: 15, halign: 'center' }, // Fichas
-      4: { cellWidth: 25, halign: 'center' }, // Tipo
-      5: { cellWidth: 'auto', halign: 'left' } // Descrição
+      0: { cellWidth: 19, halign: 'center', fontStyle: 'bold' }, // Data
+      1: { cellWidth: 16, halign: 'center' }, // Hora
+      2: { cellWidth: 32, halign: 'left' }, // Cliente
+      3: { cellWidth: 20, halign: 'right', fontStyle: 'bold' }, // Valor
+      4: { cellWidth: 14, halign: 'center' }, // Fichas
+      5: { cellWidth: 24, halign: 'center' }, // Tipo
+      6: { cellWidth: 'auto', halign: 'left' } // Descrição
     },
     alternateRowStyles: {
       fillColor: [248, 250, 252]
@@ -789,18 +826,18 @@ function generatePdfReport({ scope = 'all', sort = 'desc', responsavel = 'Daniel
       fillColor: [241, 245, 249],
       textColor: [15, 23, 42],
       fontStyle: 'bold',
-      fontSize: 8
+      fontSize: 7.8
     },
     didParseCell: function(data) {
       if (data.section === 'body') {
         const rawRow = targetEvents[data.row.index];
         if (rawRow) {
-          if (data.column.index === 2 && rawRow.valor > 0) {
+          if (data.column.index === 3 && rawRow.valor > 0) {
             data.cell.styles.textColor = [22, 101, 52];
           }
           if (rawRow.tipo === 'sangria') {
             data.cell.styles.fillColor = [254, 242, 242];
-            if (data.column.index === 4) {
+            if (data.column.index === 5) {
               data.cell.styles.textColor = [185, 28, 28];
               data.cell.styles.fontStyle = 'bold';
             }

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 DG TECH ARCADE — SERVIDOR CENTRAL DE CONTROLE REMOTO 4G/WI-FI & TELEMETRIA PIX NUVEM
 Foco: Monitoramento Remoto de Vendas da Barbearia (Mercado Pago Nuvem) + Disparo de Coin (ESP-01S)
@@ -188,15 +189,54 @@ def sync_mercadopago(limit=50):
                     sales_data["general_tokens"] += fichas
                     sales_data["general_cash"] += valor
 
+                    # Identificação do cliente e banco pagador
+                    payer = p.get("payer") or {}
+                    fname = (payer.get("first_name") or "").strip()
+                    lname = (payer.get("last_name") or "").strip()
+                    nome_cliente = f"{fname} {lname}".strip()
+
+                    bank_info = p.get("point_of_interaction", {}).get("transaction_data", {}).get("bank_info", {}).get("payer", {})
+                    b_raw = bank_info.get("long_name") or ""
+                    banco = "Pix"
+                    if "NU PAGAMENTOS" in b_raw.upper():
+                        banco = "Nubank"
+                    elif "PICPAY" in b_raw.upper():
+                        banco = "PicPay"
+                    elif "CAIXA" in b_raw.upper():
+                        banco = "Caixa Econômica"
+                    elif "ITAU" in b_raw.upper():
+                        banco = "Itaú"
+                    elif "BRADESCO" in b_raw.upper():
+                        banco = "Bradesco"
+                    elif "INTER" in b_raw.upper():
+                        banco = "Banco Inter"
+                    elif "SANTANDER" in b_raw.upper():
+                        banco = "Santander"
+                    elif "PAGSEGURO" in b_raw.upper() or "PAGBANK" in b_raw.upper():
+                        banco = "PagBank"
+                    elif "C6" in b_raw.upper():
+                        banco = "C6 Bank"
+                    elif b_raw:
+                        banco = b_raw.split("-")[0].strip()
+
+                    if nome_cliente:
+                        cliente_display = f"{nome_cliente} ({banco})"
+                    elif banco != "Pix":
+                        cliente_display = f"Cliente {banco}"
+                    else:
+                        cliente_display = "Cliente Pix"
+
                     event_id = len(sales_data["events"]) + 1
-                    clean_desc = f"Pix Barbearia: {desc} (MP #{pid})"
+                    clean_desc = f"Pix Barbearia: {desc} • {cliente_display} (MP #{pid})"
                     evt = {
                         "id": event_id,
                         "tipo": "venda",
                         "fichas": fichas,
                         "valor": valor,
+                        "cliente": cliente_display,
+                        "banco": banco,
                         "descricao": clean_desc,
-                        "origem": "Mercado Pago (Pix Nuvem)",
+                        "origem": f"Mercado Pago ({banco})",
                         "timestamp": ts,
                         "hora": hora_str,
                         "data": data_str,
@@ -410,6 +450,11 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             self.post_config_settings()
             return
 
+        # 5. API: Atualizar Nome do Cliente da Venda
+        elif path == '/api/vendas/cliente':
+            self.post_update_cliente()
+            return
+
         self.send_json(404, {"error": "Rota não encontrada"})
 
     # --- BRIDGE ESP-01S (RELÉ COIN) ---
@@ -614,6 +659,35 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 save_data()
 
             self.send_json(200, {"success": True, "message": "Configurações salvas com sucesso"})
+        except Exception as e:
+            self.send_json(500, {"success": False, "error": str(e)})
+
+    def post_update_cliente(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw_body = self.rfile.read(length).decode('utf-8')
+            req_data = json.loads(raw_body) if raw_body else {}
+
+            event_id = int(req_data.get("event_id", 0))
+            novo_cliente = str(req_data.get("cliente", "")).strip()
+
+            if not event_id:
+                self.send_json(400, {"success": False, "error": "ID do evento não informado"})
+                return
+
+            with data_lock:
+                for evt in sales_data.get("events", []):
+                    if evt.get("id") == event_id:
+                        evt["cliente"] = novo_cliente
+                        desc_parts = evt.get("descricao", "").split(" • ")
+                        mp_id = evt.get("mp_id", "")
+                        mp_tag = f" (MP #{mp_id})" if mp_id else ""
+                        evt["descricao"] = f"{desc_parts[0]} • {novo_cliente}{mp_tag}"
+                        save_data()
+                        self.send_json(200, {"success": True, "event": evt})
+                        return
+
+            self.send_json(404, {"success": False, "error": "Evento não encontrado"})
         except Exception as e:
             self.send_json(500, {"success": False, "error": str(e)})
 
