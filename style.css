@@ -933,6 +933,41 @@ input:checked + .slider::before {
   gap: 0.65rem;
 }
 
+.logs-counter-badge {
+  background: rgba(255, 30, 66, 0.12);
+  border: 1px solid rgba(255, 30, 66, 0.35);
+  color: var(--red-light, #ff4d6d);
+  font-family: var(--font-data);
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0.3rem 0.8rem;
+  border-radius: 20px;
+  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  box-shadow: 0 0 10px rgba(255, 30, 66, 0.15);
+}
+
+.log-time {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+
+.log-time strong {
+  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.log-time small {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-dim, #888899);
+  margin-top: 2px;
+}
+
 .btn-secondary {
   background: #1b1b26;
   border: 1px solid var(--border-subtle);

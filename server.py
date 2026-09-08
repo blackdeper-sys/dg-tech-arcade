@@ -16,7 +16,10 @@ import re
 import sys
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# Fuso Horário Oficial de Brasília (UTC-3)
+BRAZIL_TZ = timezone(timedelta(hours=-3))
 
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -72,6 +75,8 @@ def load_data():
                     sales_data["barber_split_percent"] = 50
                 if "mp_access_token" not in sales_data or not sales_data["mp_access_token"]:
                     sales_data["mp_access_token"] = DEFAULT_MP_TOKEN
+                if "events" in sales_data and sales_data["events"]:
+                    sales_data["events"].sort(key=lambda x: (float(x.get("timestamp", 0)), int(x.get("id", 0))))
         except Exception as e:
             print(f"[STORAGE AVISO] Falha ao carregar {DATA_FILE}: {e}")
 
@@ -87,6 +92,7 @@ def save_data():
 def add_event(tipo, fichas, valor, descricao, origem="Painel", mp_id=None):
     with data_lock:
         event_id = len(sales_data["events"]) + 1
+        now_br = datetime.now(BRAZIL_TZ)
         evt = {
             "id": event_id,
             "tipo": tipo,  # 'manutencao', 'venda', 'cortesia', 'sangria'
@@ -94,16 +100,18 @@ def add_event(tipo, fichas, valor, descricao, origem="Painel", mp_id=None):
             "valor": valor,
             "descricao": descricao,
             "origem": origem,
-            "timestamp": time.time(),
-            "hora": time.strftime("%H:%M:%S"),
-            "data": time.strftime("%d/%m/%Y")
+            "timestamp": now_br.timestamp(),
+            "hora": now_br.strftime("%H:%M:%S"),
+            "data": now_br.strftime("%d/%m/%Y")
         }
         if mp_id:
             evt["mp_id"] = str(mp_id)
         sales_data["events"].append(evt)
+        # Mantém histórico rigorosamente ordenado por data e hora cronológica
+        sales_data["events"].sort(key=lambda x: (float(x.get("timestamp", 0)), int(x.get("id", 0))))
         # Limita histórico recente a 350 eventos
         if len(sales_data["events"]) > 350:
-            sales_data["events"].pop(0)
+            sales_data["events"] = sales_data["events"][-350:]
         save_data()
         return evt
 
@@ -170,17 +178,22 @@ def sync_mercadopago(limit=50):
                     else:
                         fichas = max(1, round(valor / price))
 
-                    # Data e hora original do pagamento no Mercado Pago
-                    dt_str = p.get("date_approved") or p.get("date_created")
+                    # Data e hora original do pagamento no Mercado Pago convertida para o Fuso do Brasil (UTC-3)
+                    dt_str = str(p.get("date_approved") or p.get("date_created") or "")
                     try:
-                        dt = datetime.fromisoformat(dt_str)
-                        hora_str = dt.strftime("%H:%M:%S")
-                        data_str = dt.strftime("%d/%m/%Y")
-                        ts = dt.timestamp()
+                        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                        if dt.tzinfo is not None:
+                            dt_br = dt.astimezone(BRAZIL_TZ)
+                        else:
+                            dt_br = dt.replace(tzinfo=BRAZIL_TZ)
+                        hora_str = dt_br.strftime("%H:%M:%S")
+                        data_str = dt_br.strftime("%d/%m/%Y")
+                        ts = dt_br.timestamp()
                     except Exception:
-                        hora_str = time.strftime("%H:%M:%S")
-                        data_str = time.strftime("%d/%m/%Y")
-                        ts = time.time()
+                        now_br = datetime.now(BRAZIL_TZ)
+                        hora_str = now_br.strftime("%H:%M:%S")
+                        data_str = now_br.strftime("%d/%m/%Y")
+                        ts = now_br.timestamp()
 
                     # Atualiza acumuladores da sessão e histórico vitalício
                     sales_data["session_cash"] += valor
@@ -243,8 +256,10 @@ def sync_mercadopago(limit=50):
                         "mp_id": pid
                     }
                     sales_data["events"].append(evt)
+                    # Mantém eventos rigorosamente ordenados por data e hora cronológica
+                    sales_data["events"].sort(key=lambda x: (float(x.get("timestamp", 0)), int(x.get("id", 0))))
                     if len(sales_data["events"]) > 350:
-                        sales_data["events"].pop(0)
+                        sales_data["events"] = sales_data["events"][-350:]
 
                     if "processed_mp_ids" not in sales_data:
                         sales_data["processed_mp_ids"] = []
@@ -255,7 +270,7 @@ def sync_mercadopago(limit=50):
                     new_sales += 1
                     total_val_new += valor
 
-                sales_data["last_mp_sync"] = time.strftime("%H:%M:%S")
+                sales_data["last_mp_sync"] = datetime.now(BRAZIL_TZ).strftime("%H:%M:%S")
                 sales_data["last_mp_status"] = f"Online ({len(sales_data.get('processed_mp_ids', []))} processados)"
 
                 if new_sales > 0:

@@ -165,6 +165,7 @@ async function fetchServerStatus() {
       }
 
       if (s.events && s.events.length > 0) {
+        s.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
         appState.events = s.events;
         lastTelemetryEventId = s.events[s.events.length - 1].id;
       }
@@ -268,11 +269,14 @@ async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto') {
     cliente: modo === 'manutencao' ? 'Técnico / Manutenção' : (modo === 'cortesia' ? 'Cortesia / Bônus' : 'Venda Local'),
     timestamp: now.getTime() / 1000,
     data: now.toLocaleDateString('pt-BR'),
-    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   };
 
-  appState.events.unshift(event);
-  if (appState.events.length > 300) appState.events.pop();
+  if (!appState.events.some(e => e.id === event.id)) {
+    appState.events.push(event);
+    appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
+    if (appState.events.length > 350) appState.events = appState.events.slice(-350);
+  }
 
   // Atualiza estado financeiro local
   const valor = qtd * appState.tokenPrice;
@@ -362,10 +366,12 @@ function startTelemetryPolling() {
       if (data.events && data.events.length > 0) {
         let hasNewVenda = false;
         data.events.forEach(evt => {
-          lastTelemetryEventId = Math.max(lastTelemetryEventId, evt.id);
-          // Evita duplicatas locais
-          if (!appState.events.some(e => e.id === evt.id)) {
-            appState.events.unshift(evt);
+          lastTelemetryEventId = Math.max(lastTelemetryEventId, Number(evt.id) || 0);
+          const existingIdx = appState.events.findIndex(e => e.id === evt.id);
+          if (existingIdx >= 0) {
+            appState.events[existingIdx] = evt;
+          } else {
+            appState.events.push(evt);
             if (evt.tipo === 'venda') {
               hasNewVenda = true;
               showToast(`💈 NOVO PIX NA BARBEARIA! ${evt.descricao || ''}`);
@@ -373,11 +379,17 @@ function startTelemetryPolling() {
             }
           }
         });
+        appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
+        if (appState.events.length > 350) appState.events = appState.events.slice(-350);
+
         if (hasNewVenda) {
           playCoinSound();
           triggerScreenFlash();
         }
-        fetchServerStatus();
+        if (data.session_cash !== undefined) appState.sessionCash = data.session_cash;
+        if (data.session_tokens !== undefined) appState.sessionTokens = data.session_tokens;
+        saveLocalState();
+        renderAllData();
       }
     } catch (e) {
       // Ignora pequenas falhas de polling temporárias
@@ -439,11 +451,14 @@ async function executeSangria(responsavel, observacao, shouldGenPdf = true) {
     split_percent: splitPercent,
     timestamp: now.getTime() / 1000,
     data: now.toLocaleDateString('pt-BR'),
-    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   };
 
-  appState.events.unshift(event);
-  if (appState.events.length > 300) appState.events.pop();
+  if (!appState.events.some(e => e.id === event.id)) {
+    appState.events.push(event);
+    appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
+    if (appState.events.length > 350) appState.events = appState.events.slice(-350);
+  }
 
   saveLocalState();
   renderAllData();
@@ -506,11 +521,14 @@ async function executeManualSale(fichas, valor, origem) {
     banco: 'Dinheiro Físico',
     timestamp: now.getTime() / 1000,
     data: now.toLocaleDateString('pt-BR'),
-    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   };
 
-  appState.events.unshift(event);
-  if (appState.events.length > 300) appState.events.pop();
+  if (!appState.events.some(e => e.id === event.id)) {
+    appState.events.push(event);
+    appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
+    if (appState.events.length > 350) appState.events = appState.events.slice(-350);
+  }
 
   saveLocalState();
   renderAllData();
@@ -576,13 +594,32 @@ function renderAllData() {
   renderLogsTable();
 }
 
+// ==========================================================================
+// FORMATAÇÃO DE DATA E HORA DE EVENTOS (FUSO HORÁRIO DO BRASIL / LOCAL)
+// ==========================================================================
+function formatEventDateTime(evt) {
+  if (evt && evt.timestamp) {
+    const d = new Date(Number(evt.timestamp) * 1000);
+    if (!isNaN(d.getTime())) {
+      return {
+        hora: d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        data: d.toLocaleDateString('pt-BR')
+      };
+    }
+  }
+  return {
+    hora: (evt && evt.hora) ? (evt.hora.length === 5 ? `${evt.hora}:00` : evt.hora) : '--:--:--',
+    data: (evt && evt.data) ? evt.data : ''
+  };
+}
+
 function renderLogsTable() {
   const tbody = document.getElementById('logsTableBody');
   if (!tbody) return;
 
   const search = (document.getElementById('logSearchInput')?.value || '').toLowerCase().trim();
 
-  let filtered = appState.events;
+  let filtered = appState.events || [];
   if (currentFilter !== 'all') {
     filtered = filtered.filter(e => e.tipo === currentFilter);
   }
@@ -590,8 +627,23 @@ function renderLogsTable() {
     filtered = filtered.filter(e => 
       (e.descricao && e.descricao.toLowerCase().includes(search)) ||
       (e.origem && e.origem.toLowerCase().includes(search)) ||
-      (e.hora && e.hora.toLowerCase().includes(search))
+      (e.hora && e.hora.toLowerCase().includes(search)) ||
+      (e.data && e.data.toLowerCase().includes(search)) ||
+      (e.cliente && e.cliente.toLowerCase().includes(search)) ||
+      (e.banco && e.banco.toLowerCase().includes(search)) ||
+      (e.tipo && e.tipo.toLowerCase().includes(search))
     );
+  }
+
+  // Atualiza badge contador na interface
+  const counterEl = document.getElementById('logsCounterBadge');
+  const totalCount = (appState.events || []).length;
+  if (counterEl) {
+    if (filtered.length === totalCount) {
+      counterEl.textContent = `${totalCount} registros`;
+    } else {
+      counterEl.textContent = `${filtered.length} de ${totalCount} registros`;
+    }
   }
 
   if (filtered.length === 0) {
@@ -599,7 +651,15 @@ function renderLogsTable() {
     return;
   }
 
-  tbody.innerHTML = filtered.slice(0, 50).map(evt => {
+  // SEMPRE ordena os registros do MAIS RECENTE para o MAIS ANTIGO (Decrescente)
+  const sorted = [...filtered].sort((a, b) => {
+    const tsA = Number(a.timestamp) || 0;
+    const tsB = Number(b.timestamp) || 0;
+    if (tsB !== tsA) return tsB - tsA;
+    return (Number(b.id) || 0) - (Number(a.id) || 0);
+  });
+
+  tbody.innerHTML = sorted.slice(0, 100).map(evt => {
     let badgeClass = 'badge-manutencao';
     let badgeLabel = 'MANUTENÇÃO';
 
@@ -622,10 +682,11 @@ function renderLogsTable() {
     const valorStr = (evt.valor && evt.valor > 0) ? `R$ ${formatCurrency(evt.valor)}` : '—';
     const fichasStr = evt.fichas ? `${evt.fichas} un` : '—';
     const clienteStr = evt.cliente || (evt.tipo === 'venda' ? (evt.banco ? `Cliente ${evt.banco}` : 'Cliente Pix') : '—');
+    const dtInfo = formatEventDateTime(evt);
 
     return `
       <tr>
-        <td class="log-time">${evt.hora || '--:--'} <small class="text-muted">${evt.data || ''}</small></td>
+        <td class="log-time"><strong>${dtInfo.hora}</strong> <small class="text-muted">${dtInfo.data}</small></td>
         <td><span class="event-badge ${badgeClass}">${badgeLabel}</span></td>
         <td class="log-client font-mono">
           <div class="client-name-wrapper">
@@ -675,8 +736,11 @@ window.promptEditClientName = promptEditClientName;
 // ==========================================================================
 
 function getSessionEvents() {
+  const sorted = [...(appState.events || [])].sort((a, b) => 
+    (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0) || (Number(b.id) || 0) - (Number(a.id) || 0)
+  );
   const list = [];
-  for (const evt of (appState.events || [])) {
+  for (const evt of sorted) {
     if (evt.tipo === 'sangria') {
       break;
     }
@@ -705,19 +769,29 @@ function exportLogsCsv() {
     return;
   }
 
-  const headers = ['ID', 'Data', 'Horario', 'Tipo', 'Descricao', 'Fichas', 'Valor_R$', 'Origem'];
-  const rows = appState.events.map(e => [
-    e.id,
-    e.data || '',
-    e.hora || '',
-    e.tipo || '',
-    `"${(e.descricao || '').replace(/"/g, '""')}"`,
-    e.fichas || 0,
-    (e.valor || 0).toFixed(2),
-    `"${(e.origem || '').replace(/"/g, '""')}"`
-  ]);
+  // Ordena do mais recente para o mais antigo
+  const sorted = [...appState.events].sort((a, b) => 
+    (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0) || (Number(b.id) || 0) - (Number(a.id) || 0)
+  );
 
-  const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const headers = ['ID', 'Data', 'Horario', 'Tipo', 'Cliente_Pagador', 'Descricao', 'Fichas', 'Valor_R$', 'Origem'];
+  const rows = sorted.map(e => {
+    const dtInfo = formatEventDateTime(e);
+    const clienteStr = e.cliente || (e.tipo === 'venda' ? (e.banco ? `Cliente ${e.banco}` : 'Cliente Pix') : '');
+    return [
+      e.id,
+      dtInfo.data,
+      dtInfo.hora,
+      e.tipo || '',
+      `"${clienteStr.replace(/"/g, '""')}"`,
+      `"${(e.descricao || '').replace(/"/g, '""')}"`,
+      e.fichas || 0,
+      (e.valor || 0).toFixed(2),
+      `"${(e.origem || '').replace(/"/g, '""')}"`
+    ];
+  });
+
+  const csvContent = '\uFEFF' + [headers.join(';'), ...rows.map(r => r.join(';'))].join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
 
@@ -907,8 +981,9 @@ function generatePdfReport({ scope = 'all', sort = 'desc', responsavel = 'Daniel
 
   // 3. Tabela de Transações Organizada por Data, Hora e Valor
   const tableRows = targetEvents.map(evt => {
-    const dataStr = evt.data || '--/--/----';
-    const horaStr = evt.hora || '--:--:--';
+    const dtInfo = formatEventDateTime(evt);
+    const dataStr = dtInfo.data || evt.data || '--/--/----';
+    const horaStr = dtInfo.hora || evt.hora || '--:--:--';
     const clienteStr = evt.cliente || (evt.tipo === 'venda' ? (evt.banco ? `Cliente ${evt.banco}` : 'Cliente Pix') : '—');
     const valorStr = (evt.valor && evt.valor > 0) ? `R$ ${formatCurrency(evt.valor)}` : '—';
     const fichasStr = evt.fichas ? `${evt.fichas} un` : '—';
@@ -1096,14 +1171,17 @@ function generateSangriaPdfReceipt(data) {
   }
 
   // Tabela com as vendas daquela sessão
-  const tableData = (data.events || []).map(e => [
-    e.data || '--/--/----',
-    e.hora || '--:--',
-    e.valor && e.valor > 0 ? `R$ ${formatCurrency(e.valor)}` : '—',
-    e.fichas ? `${e.fichas} un` : '—',
-    formatEventTypeLabel(e),
-    e.descricao || 'Venda Arcade'
-  ]);
+  const tableData = (data.events || []).map(e => {
+    const dtInfo = formatEventDateTime(e);
+    return [
+      dtInfo.data || e.data || '--/--/----',
+      dtInfo.hora || e.hora || '--:--',
+      e.valor && e.valor > 0 ? `R$ ${formatCurrency(e.valor)}` : '—',
+      e.fichas ? `${e.fichas} un` : '—',
+      formatEventTypeLabel(e),
+      e.descricao || 'Venda Arcade'
+    ];
+  });
 
   if (tableData.length > 0) {
     doc.autoTable({
