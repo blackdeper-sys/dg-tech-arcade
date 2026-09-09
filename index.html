@@ -193,7 +193,7 @@
         <div class="daily-stat-info">
           <span class="daily-stat-title">ÚLTIMO FECHAMENTO / SANGRIA</span>
           <div class="daily-stat-values">
-            <span class="daily-stat-sangria-info text-blue font-mono" id="lastSangriaDisplay">Carregando...</span>
+            <span class="daily-stat-sangria-info text-blue font-mono" id="lastSangriaDisplay">07/09/2026 às 21:30 — R$ 188,50 (76 un) • Daniel</span>
           </div>
         </div>
       </div>
@@ -393,7 +393,42 @@
       </section>
     </div>
 
-    <!-- 4. LOG DE AUDITORIA & HISTÓRICO DE TRANSAÇÕES -->
+    <!-- 4. HISTÓRICO DE CAIXAS ANTERIORES FECHADOS (SANGRIA & REPASSE) -->
+    <section class="panel-card closed-registers-panel" id="closedRegistersSection" style="margin-bottom: 1.5rem;">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="panel-icon">🔒</span>
+          <div>
+            <h3 class="panel-title">HISTÓRICO DE CAIXAS FECHADOS (SANGRIA & REPASSE)</h3>
+            <p class="panel-sub">Registro permanente de caixas encerrados, faturamento recolhido e divisão da barbearia</p>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <span id="closedRegistersBadge" class="logs-counter-badge">Carregando...</span>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="telemetry-table" id="closedRegistersTable">
+          <thead>
+            <tr>
+              <th>DATA / HORA</th>
+              <th>VALOR TOTAL FECHADO</th>
+              <th>FICHAS</th>
+              <th>BARBEARIA (<span id="tableBarberPercent">50</span>%)</th>
+              <th>SEU LUCRO LÍQUIDO</th>
+              <th>RESPONSÁVEL / OBS</th>
+              <th>COMPROVANTE</th>
+            </tr>
+          </thead>
+          <tbody id="closedRegistersTableBody">
+            <!-- Inserido dinamicamente via app.js -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 5. LOG DE AUDITORIA & HISTÓRICO DE TRANSAÇÕES -->
     <section class="panel-card logs-panel">
       <div class="panel-header">
         <div class="panel-title-group">

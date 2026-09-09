@@ -45,6 +45,8 @@ const defaultState = {
   yesterdayCash: 0.00,
   yesterdayTokens: 0,
   lastSangria: null,
+  closedRegisters: [],
+  dailySales: [],
 
   // Lista de Eventos / Transações
   events: []
@@ -107,6 +109,97 @@ function getPin() {
 }
 
 // ==========================================================================
+// UTILITÁRIOS DE DATA & FUSO HORÁRIO OFICIAL (BRASÍLIA UTC-3)
+// ==========================================================================
+
+// Obtém a data atual ou deslocada estritamente no fuso horário de Brasília (UTC-3)
+function getBrazilDateString(offsetDays = 0) {
+  const now = new Date();
+  const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const brMs = utcMs + (-3 * 3600000) + (offsetDays * 86400000);
+  const brDate = new Date(brMs);
+  const d = String(brDate.getDate()).padStart(2, '0');
+  const m = String(brDate.getMonth() + 1).padStart(2, '0');
+  const y = brDate.getFullYear();
+  return `${d}/${m}/${y}`;
+}
+
+// Normaliza qualquer formato de data (ex: '8/9/2026', '2026-09-08') para 'DD/MM/YYYY'
+function normalizeDateStr(dateStr) {
+  if (!dateStr) return '';
+  const clean = String(dateStr).trim();
+  const parts = clean.split(/[\/\-]/);
+  if (parts.length === 3) {
+    if (parts[0].length === 4) {
+      // Formato ISO: YYYY-MM-DD
+      return `${parts[2].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[0]}`;
+    } else {
+      // Formato Brasileiro: DD/MM/YYYY ou D/M/YYYY
+      return `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+    }
+  }
+  return clean;
+}
+
+// Fallback para encontrar o último fechamento nos eventos caso não esteja em appState.lastSangria
+function getLatestSangriaFallback() {
+  const events = appState.events || [];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.tipo === 'sangria') {
+      return {
+        data: normalizeDateStr(e.data || ''),
+        hora: e.hora || '',
+        valor: Number(e.valor) || 0,
+        fichas: Number(e.fichas) || 0,
+        responsavel: e.responsavel || 'Operador',
+        observacao: e.observacao || ''
+      };
+    }
+  }
+  return null;
+}
+
+// Sincroniza lista local de caixas fechados a partir de eventos de sangria
+function syncClosedRegistersFromEvents() {
+  if (!appState.closedRegisters) appState.closedRegisters = [];
+  const existingSigs = new Set(appState.closedRegisters.map(r => `${r.timestamp}_${r.valor}`));
+  const splitPercent = appState.barberSplitPercent ?? 50;
+
+  (appState.events || []).forEach(evt => {
+    if (evt.tipo === 'sangria') {
+      const ts = Number(evt.timestamp) || 0;
+      const val = Number(evt.valor) || 0;
+      const sig = `${ts}_${val}`;
+      if (!existingSigs.has(sig)) {
+        const bVal = Number(evt.repasse_barbearia) || Math.round((val * splitPercent) / 100.0 * 100) / 100;
+        const oVal = Number(evt.lucro_proprietario) || Math.round((val - bVal) * 100) / 100;
+        appState.closedRegisters.push({
+          id: appState.closedRegisters.length + 1,
+          event_id: evt.id,
+          data: normalizeDateStr(evt.data || ''),
+          hora: evt.hora || '',
+          timestamp: ts,
+          valor: val,
+          fichas: Number(evt.fichas) || 0,
+          responsavel: evt.responsavel || 'Operador',
+          observacao: evt.observacao || '',
+          repasse_barbearia: bVal,
+          lucro_proprietario: oVal,
+          split_percent: splitPercent
+        });
+        existingSigs.add(sig);
+      }
+    }
+  });
+
+  appState.closedRegisters.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+  for (let i = 0; i < appState.closedRegisters.length; i++) {
+    appState.closedRegisters[i].id = appState.closedRegisters.length - i;
+  }
+}
+
+// ==========================================================================
 // CÁLCULO RESILIENTE DE TOTAIS & SESSÃO A PARTIR DOS EVENTOS
 // ==========================================================================
 function recalculateStateTotals() {
@@ -122,20 +215,21 @@ function recalculateStateTotals() {
         lastSangriaTs = ts;
         lastSangriaId = Number(evt.id) || 0;
         lastSangriaInfo = {
-          data: evt.data || '',
+          data: normalizeDateStr(evt.data || ''),
           hora: evt.hora || '',
           valor: Number(evt.valor) || 0,
           fichas: Number(evt.fichas) || 0,
-          responsavel: evt.responsavel || 'Operador'
+          responsavel: evt.responsavel || 'Operador',
+          observacao: evt.observacao || '',
+          repasse_barbearia: Number(evt.repasse_barbearia) || 0,
+          lucro_proprietario: Number(evt.lucro_proprietario) || 0
         };
       }
     }
   }
 
-  const todayStr = new Date().toLocaleDateString('pt-BR');
-  const yDate = new Date();
-  yDate.setDate(yDate.getDate() - 1);
-  const yesterdayStr = yDate.toLocaleDateString('pt-BR');
+  const todayStr = getBrazilDateString(0);
+  const yesterdayStr = getBrazilDateString(-1);
 
   let sCash = 0;
   let sTokens = 0;
@@ -148,20 +242,32 @@ function recalculateStateTotals() {
   let yesterdayCash = 0;
   let yesterdayTokens = 0;
 
+  const dailyMap = new Map();
+
   for (const evt of events) {
     const ts = Number(evt.timestamp) || 0;
     const id = Number(evt.id) || 0;
     const val = Number(evt.valor) || 0;
     const fichas = Number(evt.fichas) || 0;
-    const dataStr = evt.data || '';
+    const normDate = normalizeDateStr(evt.data || '');
 
     if (evt.tipo === 'venda') {
-      if (dataStr === todayStr) {
+      if (normDate === todayStr) {
         todayCash += val;
         todayTokens += fichas;
-      } else if (dataStr === yesterdayStr) {
+      } else if (normDate === yesterdayStr) {
         yesterdayCash += val;
         yesterdayTokens += fichas;
+      }
+
+      if (normDate) {
+        if (!dailyMap.has(normDate)) {
+          dailyMap.set(normDate, { data: normDate, valor: 0, fichas: 0, count: 0 });
+        }
+        const d = dailyMap.get(normDate);
+        d.valor = Math.round((d.valor + val) * 100) / 100;
+        d.fichas += fichas;
+        d.count += 1;
       }
     }
 
@@ -185,11 +291,30 @@ function recalculateStateTotals() {
   appState.paidTokens = sPaid;
   appState.courtesyTokens = sCourtesy;
   appState.maintenanceTokens = sMaint;
+
+  // Atualiza métricas diárias
   appState.todayCash = Math.round(todayCash * 100) / 100;
   appState.todayTokens = todayTokens;
   appState.yesterdayCash = Math.round(yesterdayCash * 100) / 100;
   appState.yesterdayTokens = yesterdayTokens;
-  appState.lastSangria = lastSangriaInfo;
+  if (lastSangriaInfo) {
+    appState.lastSangria = lastSangriaInfo;
+  }
+
+  // Agrupamento de dias de venda ordenado
+  const sortedDays = Array.from(dailyMap.values()).sort((a, b) => {
+    const parseD = (s) => {
+      const p = s.split('/').map(Number);
+      return new Date(p[2], p[1] - 1, p[0]).getTime();
+    };
+    return parseD(b.data) - parseD(a.data);
+  });
+  if (sortedDays.length > 0) {
+    appState.dailySales = sortedDays;
+  }
+
+  // Garante sincronização de caixas fechados
+  syncClosedRegistersFromEvents();
 }
 
 // ==========================================================================
@@ -259,6 +384,19 @@ async function fetchServerStatus() {
       if (s.price_per_token !== undefined) appState.tokenPrice = s.price_per_token;
       if (s.require_pin !== undefined) appState.requirePin = s.require_pin;
       if (s.barber_split_percent !== undefined) appState.barberSplitPercent = s.barber_split_percent;
+
+      // Métricas Oficiais do Servidor (Fuso de Brasília)
+      if (s.today_cash !== undefined) appState.todayCash = s.today_cash;
+      if (s.today_tokens !== undefined) appState.todayTokens = s.today_tokens;
+      if (s.yesterday_cash !== undefined) appState.yesterdayCash = s.yesterday_cash;
+      if (s.yesterday_tokens !== undefined) appState.yesterdayTokens = s.yesterday_tokens;
+      if (s.last_sangria) appState.lastSangria = s.last_sangria;
+      if (s.closed_registers && Array.isArray(s.closed_registers) && s.closed_registers.length > 0) {
+        appState.closedRegisters = s.closed_registers;
+      }
+      if (s.daily_sales && Array.isArray(s.daily_sales) && s.daily_sales.length > 0) {
+        appState.dailySales = s.daily_sales;
+      }
 
       const mpText = document.getElementById('mpSyncText');
       if (mpText) {
@@ -520,6 +658,18 @@ function startTelemetryPolling() {
         stateChanged = true;
       }
 
+      if (data.today_cash !== undefined) appState.todayCash = data.today_cash;
+      if (data.today_tokens !== undefined) appState.todayTokens = data.today_tokens;
+      if (data.yesterday_cash !== undefined) appState.yesterdayCash = data.yesterday_cash;
+      if (data.yesterday_tokens !== undefined) appState.yesterdayTokens = data.yesterday_tokens;
+      if (data.last_sangria) appState.lastSangria = data.last_sangria;
+      if (data.closed_registers && Array.isArray(data.closed_registers) && data.closed_registers.length > 0) {
+        appState.closedRegisters = data.closed_registers;
+      }
+      if (data.daily_sales && Array.isArray(data.daily_sales) && data.daily_sales.length > 0) {
+        appState.dailySales = data.daily_sales;
+      }
+
       if (data.last_sync) {
         const mpText = document.getElementById('mpSyncText');
         if (mpText) mpText.textContent = `BARBEARIA (${data.last_sync})`;
@@ -594,6 +744,24 @@ async function executeSangria(responsavel, observacao, shouldGenPdf = true) {
     appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
     if (appState.events.length > 350) appState.events = appState.events.slice(-350);
   }
+
+  // Registra permanentemente na lista de caixas fechados
+  if (!appState.closedRegisters) appState.closedRegisters = [];
+  const closedReg = {
+    id: appState.closedRegisters.length + 1,
+    event_id: event.id,
+    data: normalizeDateStr(event.data || getBrazilDateString(0)),
+    hora: event.hora || now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    timestamp: event.timestamp || (now.getTime() / 1000),
+    valor: valorRecolhido,
+    fichas: fichasFechadas,
+    responsavel: responsavel,
+    observacao: observacao,
+    repasse_barbearia: barberValor,
+    lucro_proprietario: ownerValor,
+    split_percent: splitPercent
+  };
+  appState.closedRegisters.unshift(closedReg);
 
   // Recalcula totais a partir dos eventos (zera sessionCash e sessionTokens com precisão definitiva)
   recalculateStateTotals();
@@ -697,11 +865,19 @@ function renderAllData() {
   setText('yesterdayCashTotal', `R$ ${formatCurrency(appState.yesterdayCash || 0)}`);
   setText('yesterdayTokensCount', `${appState.yesterdayTokens || 0} fichas`);
 
-  if (appState.lastSangria) {
-    setText('lastSangriaDisplay', `${appState.lastSangria.data} ${appState.lastSangria.hora} (R$ ${formatCurrency(appState.lastSangria.valor)})`);
+  // Último Fechamento / Sangria
+  const lastSang = appState.lastSangria || getLatestSangriaFallback();
+  if (lastSang) {
+    const valFmt = formatCurrency(lastSang.valor || 0);
+    const fichasFmt = lastSang.fichas ? ` (${lastSang.fichas} un)` : '';
+    const respFmt = lastSang.responsavel ? ` • ${lastSang.responsavel}` : '';
+    setText('lastSangriaDisplay', `${lastSang.data} às ${lastSang.hora} — R$ ${valFmt}${fichasFmt}${respFmt}`);
   } else {
-    setText('lastSangriaDisplay', 'Nenhuma registrada');
+    setText('lastSangriaDisplay', 'Nenhum fechamento registrado');
   }
+
+  // Renderiza Tabela de Caixas Fechados Anteriores
+  renderClosedRegistersTable();
 
   // Divisão Financeira da Barbearia
   const splitPercent = appState.barberSplitPercent ?? 50;
@@ -863,6 +1039,97 @@ function renderLogsTable() {
     `;
   }).join('');
 }
+
+// ==========================================================================
+// RENDERIZAÇÃO DO HISTÓRICO DE CAIXAS FECHADOS (SANGRIA & REPASSE)
+// ==========================================================================
+function renderClosedRegistersTable() {
+  const tbody = document.getElementById('closedRegistersTableBody');
+  const badge = document.getElementById('closedRegistersBadge');
+  const tablePercent = document.getElementById('tableBarberPercent');
+  if (tablePercent) tablePercent.textContent = appState.barberSplitPercent ?? 50;
+
+  if (!tbody) return;
+
+  const registers = appState.closedRegisters || [];
+  if (badge) {
+    badge.textContent = `${registers.length} fechamento${registers.length === 1 ? '' : 's'}`;
+  }
+
+  if (registers.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted py-4">Nenhum caixa fechado anteriormente.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = registers.map(reg => {
+    const barberVal = reg.repasse_barbearia !== undefined ? reg.repasse_barbearia : ((reg.valor * (reg.split_percent || 50)) / 100);
+    const ownerVal = reg.lucro_proprietario !== undefined ? reg.lucro_proprietario : (reg.valor - barberVal);
+
+    return `
+      <tr>
+        <td class="log-time">
+          <strong>${escapeHtml(reg.data)}</strong> <small class="text-muted">${escapeHtml(reg.hora)}</small>
+        </td>
+        <td class="log-value" style="color: #22c55e; font-weight: bold; font-family: 'Rajdhani', sans-serif; font-size: 1.15rem;">
+          R$ ${formatCurrency(reg.valor)}
+        </td>
+        <td class="log-tokens font-mono" style="color: #38bdf8; font-weight: 600;">
+          ${reg.fichas || 0} un
+        </td>
+        <td class="log-barber text-yellow font-digital" style="font-weight: bold; font-size: 1.05rem;">
+          R$ ${formatCurrency(barberVal)}
+        </td>
+        <td class="log-owner text-green font-digital" style="font-weight: bold; font-size: 1.05rem;">
+          R$ ${formatCurrency(ownerVal)}
+        </td>
+        <td>
+          <div style="font-weight: 600; color: #f1f5f9;">${escapeHtml(reg.responsavel || 'Operador')}</div>
+          ${reg.observacao ? `<small class="text-muted" style="font-size: 0.78rem;">Obs: ${escapeHtml(reg.observacao)}</small>` : ''}
+        </td>
+        <td>
+          <button class="btn-micro btn-pdf-mini" onclick="downloadClosedRegisterPdf(${reg.id})" title="Baixar comprovante PDF deste caixa" style="cursor: pointer; background: rgba(0, 229, 255, 0.15); border: 1px solid #00e5ff; color: #00e5ff; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 0.78rem;">
+            📄 Comprovante
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function downloadClosedRegisterPdf(regId) {
+  const reg = (appState.closedRegisters || []).find(r => r.id === regId);
+  if (!reg) {
+    alert('Fechamento não encontrado.');
+    return;
+  }
+
+  const splitPercent = reg.split_percent || appState.barberSplitPercent || 50;
+  const barberVal = reg.repasse_barbearia !== undefined ? reg.repasse_barbearia : ((reg.valor * splitPercent) / 100);
+  const ownerVal = reg.lucro_proprietario !== undefined ? reg.lucro_proprietario : (reg.valor - barberVal);
+
+  // Filtra transações que pertençam a esse fechamento se disponíveis nos eventos
+  let relatedEvents = [];
+  if (reg.timestamp) {
+    const regTs = Number(reg.timestamp);
+    relatedEvents = (appState.events || []).filter(e => {
+      const eTs = Number(e.timestamp) || 0;
+      return e.tipo === 'venda' && Math.abs(eTs - regTs) < 86400 * 3 && eTs <= regTs;
+    });
+  }
+
+  generateSangriaPdfReceipt({
+    valorRecolhido: reg.valor,
+    fichasFechadas: reg.fichas,
+    barberSplitPercent: splitPercent,
+    barberValor: barberVal,
+    ownerValor: ownerVal,
+    responsavel: reg.responsavel || 'Operador',
+    observacao: reg.observacao || '',
+    dataHora: `${reg.data} às ${reg.hora}`,
+    events: relatedEvents
+  });
+}
+window.downloadClosedRegisterPdf = downloadClosedRegisterPdf;
 
 // Identificar / Renomear Cliente de uma Venda
 async function promptEditClientName(eventId) {

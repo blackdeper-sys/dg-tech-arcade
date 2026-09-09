@@ -58,11 +58,13 @@ sales_data = {
     "processed_mp_ids": [],
     "last_mp_sync": None,
     "last_mp_status": "Iniciando...",
-    "events": []
+    "events": [],
+    "closed_registers": [],
+    "daily_sales": []
 }
 
 def recalculate_totals_unlocked():
-    """Recalcula de forma blindada todos os totais da sessão e do dia a partir dos eventos."""
+    """Recalcula de forma blindada todos os totais da sessão, fechamentos e faturamento diário."""
     global sales_data
     events = sales_data.get("events", [])
     
@@ -102,6 +104,8 @@ def recalculate_totals_unlocked():
     gen_tokens = 0
     gen_cash = 0.0
 
+    daily_map = {}
+
     for evt in events:
         evt_ts = float(evt.get("timestamp", 0.0))
         evt_id = int(evt.get("id", 0))
@@ -119,6 +123,15 @@ def recalculate_totals_unlocked():
             elif data_str == yesterday_str:
                 yesterday_cash += valor
                 yesterday_tokens += fichas
+
+            # Agrupamento diário
+            if data_str:
+                if data_str not in daily_map:
+                    daily_map[data_str] = {"data": data_str, "valor": 0.0, "fichas": 0, "count": 0}
+                daily_map[data_str]["valor"] = round(daily_map[data_str]["valor"] + valor, 2)
+                daily_map[data_str]["fichas"] += fichas
+                daily_map[data_str]["count"] += 1
+
         elif tipo in ["cortesia", "manutencao"]:
             gen_tokens += fichas
 
@@ -148,6 +161,54 @@ def recalculate_totals_unlocked():
         sales_data["general_tokens"] = gen_tokens
     if gen_cash > sales_data.get("general_cash", 0.0):
         sales_data["general_cash"] = round(gen_cash, 2)
+
+    # Ordenação dos dias de venda do mais recente para o mais antigo
+    def parse_d(d_str):
+        try:
+            return datetime.strptime(d_str, "%d/%m/%Y")
+        except Exception:
+            return datetime.min
+
+    sorted_days = sorted(daily_map.values(), key=lambda x: parse_d(x["data"]), reverse=True)
+    sales_data["daily_sales"] = sorted_days
+
+    # Sincronização permanente dos caixas fechados (closed_registers)
+    if "closed_registers" not in sales_data:
+        sales_data["closed_registers"] = []
+
+    existing_signatures = {(float(r.get("timestamp", 0)), float(r.get("valor", 0))) for r in sales_data["closed_registers"]}
+    existing_event_ids = {r.get("event_id") for r in sales_data["closed_registers"] if r.get("event_id")}
+    split_pct = float(sales_data.get("barber_split_percent", 50))
+
+    for evt in events:
+        if evt.get("tipo") == "sangria":
+            sig = (float(evt.get("timestamp", 0)), float(evt.get("valor", 0)))
+            eid = evt.get("id")
+            if eid not in existing_event_ids and sig not in existing_signatures:
+                v = float(evt.get("valor", 0.0))
+                b_val = round(float(evt.get("repasse_barbearia", (v * split_pct) / 100.0)), 2)
+                o_val = round(float(evt.get("lucro_proprietario", v - b_val)), 2)
+                reg = {
+                    "id": len(sales_data["closed_registers"]) + 1,
+                    "event_id": eid,
+                    "data": evt.get("data", ""),
+                    "hora": evt.get("hora", ""),
+                    "timestamp": float(evt.get("timestamp", 0.0)),
+                    "valor": v,
+                    "fichas": int(evt.get("fichas", 0)),
+                    "responsavel": evt.get("responsavel", "Operador"),
+                    "observacao": evt.get("observacao", ""),
+                    "repasse_barbearia": b_val,
+                    "lucro_proprietario": o_val,
+                    "split_percent": int(split_pct)
+                }
+                sales_data["closed_registers"].append(reg)
+                existing_signatures.add(sig)
+                existing_event_ids.add(eid)
+
+    sales_data["closed_registers"].sort(key=lambda x: (float(x.get("timestamp", 0)), int(x.get("id", 0))))
+    for idx, reg in enumerate(sales_data["closed_registers"], 1):
+        reg["id"] = idx
 
 def load_data():
     global sales_data
@@ -542,6 +603,8 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 "yesterday_cash": sales_data.get("yesterday_cash", 0.0),
                 "yesterday_tokens": sales_data.get("yesterday_tokens", 0),
                 "last_sangria": sales_data.get("last_sangria"),
+                "closed_registers": sales_data.get("closed_registers", []),
+                "daily_sales": sales_data.get("daily_sales", []),
                 "last_sync": sales_data.get("last_mp_sync")
             })
             return
@@ -706,7 +769,9 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 "fichas_fechadas": fichas_sangria,
                 "barber_share": barber_share,
                 "owner_share": owner_share,
-                "event": evt
+                "event": evt,
+                "closed_registers": sales_data.get("closed_registers", []),
+                "last_sangria": sales_data.get("last_sangria")
             })
         except Exception as e:
             self.send_json(500, {"success": False, "error": str(e)})
