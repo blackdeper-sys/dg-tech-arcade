@@ -61,6 +61,94 @@ sales_data = {
     "events": []
 }
 
+def recalculate_totals_unlocked():
+    """Recalcula de forma blindada todos os totais da sessão e do dia a partir dos eventos."""
+    global sales_data
+    events = sales_data.get("events", [])
+    
+    last_sangria_ts = 0.0
+    last_sangria_id = 0
+    last_sangria_info = None
+
+    for evt in events:
+        if evt.get("tipo") == "sangria":
+            ts = float(evt.get("timestamp", 0.0))
+            if ts >= last_sangria_ts:
+                last_sangria_ts = ts
+                last_sangria_id = int(evt.get("id", 0))
+                last_sangria_info = {
+                    "data": evt.get("data", ""),
+                    "hora": evt.get("hora", ""),
+                    "valor": float(evt.get("valor", 0.0)),
+                    "fichas": int(evt.get("fichas", 0)),
+                    "responsavel": evt.get("responsavel", "Operador")
+                }
+
+    now_br = datetime.now(BRAZIL_TZ)
+    today_str = now_br.strftime("%d/%m/%Y")
+    yesterday_str = (now_br - timedelta(days=1)).strftime("%d/%m/%Y")
+
+    s_cash = 0.0
+    s_tokens = 0
+    s_paid = 0
+    s_courtesy = 0
+    s_maint = 0
+
+    today_cash = 0.0
+    today_tokens = 0
+    yesterday_cash = 0.0
+    yesterday_tokens = 0
+
+    gen_tokens = 0
+    gen_cash = 0.0
+
+    for evt in events:
+        evt_ts = float(evt.get("timestamp", 0.0))
+        evt_id = int(evt.get("id", 0))
+        tipo = evt.get("tipo", "")
+        valor = float(evt.get("valor", 0.0))
+        fichas = int(evt.get("fichas", 0))
+        data_str = str(evt.get("data", ""))
+
+        if tipo == "venda":
+            gen_tokens += fichas
+            gen_cash += valor
+            if data_str == today_str:
+                today_cash += valor
+                today_tokens += fichas
+            elif data_str == yesterday_str:
+                yesterday_cash += valor
+                yesterday_tokens += fichas
+        elif tipo in ["cortesia", "manutencao"]:
+            gen_tokens += fichas
+
+        # Eventos da sessão: ocorridos ESTRITAMENTE após a última sangria
+        if evt_ts > last_sangria_ts or (evt_ts == last_sangria_ts and evt_id > last_sangria_id):
+            if tipo == "venda":
+                s_cash += valor
+                s_tokens += fichas
+                s_paid += fichas
+            elif tipo == "cortesia":
+                s_tokens += fichas
+                s_courtesy += fichas
+            elif tipo == "manutencao":
+                s_maint += fichas
+
+    sales_data["session_cash"] = round(s_cash, 2)
+    sales_data["session_tokens"] = s_tokens
+    sales_data["paid_tokens"] = s_paid
+    sales_data["courtesy_tokens"] = s_courtesy
+    sales_data["maintenance_tokens"] = s_maint
+    sales_data["today_cash"] = round(today_cash, 2)
+    sales_data["today_tokens"] = today_tokens
+    sales_data["yesterday_cash"] = round(yesterday_cash, 2)
+    sales_data["yesterday_tokens"] = yesterday_tokens
+    sales_data["last_sangria"] = last_sangria_info
+    if gen_tokens > sales_data.get("general_tokens", 0):
+        sales_data["general_tokens"] = gen_tokens
+    if gen_cash > sales_data.get("general_cash", 0.0):
+        sales_data["general_cash"] = round(gen_cash, 2)
+
 def load_data():
     global sales_data
     if os.path.exists(DATA_FILE):
@@ -77,6 +165,7 @@ def load_data():
                     sales_data["mp_access_token"] = DEFAULT_MP_TOKEN
                 if "events" in sales_data and sales_data["events"]:
                     sales_data["events"].sort(key=lambda x: (float(x.get("timestamp", 0)), int(x.get("id", 0))))
+                recalculate_totals_unlocked()
         except Exception as e:
             print(f"[STORAGE AVISO] Falha ao carregar {DATA_FILE}: {e}")
 
@@ -89,7 +178,7 @@ def save_data():
     except Exception as e:
         print(f"[STORAGE ERRO] Falha ao salvar {DATA_FILE}: {e}")
 
-def add_event(tipo, fichas, valor, descricao, origem="Painel", mp_id=None):
+def add_event(tipo, fichas, valor, descricao, origem="Painel", mp_id=None, extra=None):
     with data_lock:
         event_id = len(sales_data["events"]) + 1
         now_br = datetime.now(BRAZIL_TZ)
@@ -106,12 +195,15 @@ def add_event(tipo, fichas, valor, descricao, origem="Painel", mp_id=None):
         }
         if mp_id:
             evt["mp_id"] = str(mp_id)
+        if extra and isinstance(extra, dict):
+            evt.update(extra)
         sales_data["events"].append(evt)
         # Mantém histórico rigorosamente ordenado por data e hora cronológica
         sales_data["events"].sort(key=lambda x: (float(x.get("timestamp", 0)), int(x.get("id", 0))))
         # Limita histórico recente a 350 eventos
         if len(sales_data["events"]) > 350:
             sales_data["events"] = sales_data["events"][-350:]
+        recalculate_totals_unlocked()
         save_data()
         return evt
 
@@ -161,22 +253,33 @@ def sync_mercadopago(limit=50):
                     if status != "approved":
                         continue
 
-                    desc = p.get("description") or ""
-                    ext_ref = str(p.get("external_reference") or "")
+                    desc = (p.get("description") or "").strip()
+                    ext_ref = str(p.get("external_reference") or "").strip()
                     
-                    # Filtra transações do Fliperama / Arcade
+                    # Identifica tipo de pagamento e origem Pix
+                    poi = p.get("point_of_interaction") or {}
+                    poi_type = str(poi.get("type") or "").upper()
+                    poi_sub = str(poi.get("sub_type") or "").upper()
+                    is_pix = any(k in poi_type for k in ["PSP", "PIX", "QR"]) or any(k in poi_sub for k in ["PSP", "PIX", "QR"]) or (p.get("payment_method_id") == "pix")
                     is_arcade = any(kw in desc.lower() for kw in ["fliperama", "arcade", "ficha", "credito"]) or ext_ref.startswith("arcade")
-                    if not is_arcade:
+                    
+                    # Esta conta/token de produção do Mercado Pago é vinculada ao fliperama da barbearia.
+                    # Aceita se tiver palavras-chave do arcade OU se for qualquer Pix/transferência aprovada recebida.
+                    if not (is_arcade or is_pix or not desc):
                         continue
 
                     valor = float(p.get("transaction_amount", 0.0))
+                    if valor <= 0.0:
+                        continue
 
-                    # Extrai quantidade de fichas da descrição (ex: 'Fliperama - 2 credito(s)') ou calcula
+                    # Extrai quantidade de fichas da descrição (ex: 'Fliperama - 2 credito(s)') ou calcula pelo preço unitário
                     m = re.search(r'(\d+)\s*(?:credito|ficha)', desc, re.I)
                     if m:
                         fichas = int(m.group(1))
                     else:
                         fichas = max(1, round(valor / price))
+                        if not desc:
+                            desc = f"Fliperama - {fichas} credito(s)"
 
                     # Data e hora original do pagamento no Mercado Pago convertida para o Fuso do Brasil (UTC-3)
                     dt_str = str(p.get("date_approved") or p.get("date_created") or "")
@@ -194,13 +297,6 @@ def sync_mercadopago(limit=50):
                         hora_str = now_br.strftime("%H:%M:%S")
                         data_str = now_br.strftime("%d/%m/%Y")
                         ts = now_br.timestamp()
-
-                    # Atualiza acumuladores da sessão e histórico vitalício
-                    sales_data["session_cash"] += valor
-                    sales_data["session_tokens"] += fichas
-                    sales_data["paid_tokens"] += fichas
-                    sales_data["general_tokens"] += fichas
-                    sales_data["general_cash"] += valor
 
                     # Identificação do cliente e banco pagador
                     payer = p.get("payer") or {}
@@ -270,6 +366,7 @@ def sync_mercadopago(limit=50):
                     new_sales += 1
                     total_val_new += valor
 
+                recalculate_totals_unlocked()
                 sales_data["last_mp_sync"] = datetime.now(BRAZIL_TZ).strftime("%H:%M:%S")
                 sales_data["last_mp_status"] = f"Online ({len(sales_data.get('processed_mp_ids', []))} processados)"
 
@@ -283,6 +380,10 @@ def sync_mercadopago(limit=50):
                 "total_added": total_val_new,
                 "session_cash": sales_data.get("session_cash", 0.0),
                 "session_tokens": sales_data.get("session_tokens", 0),
+                "today_cash": sales_data.get("today_cash", 0.0),
+                "today_tokens": sales_data.get("today_tokens", 0),
+                "yesterday_cash": sales_data.get("yesterday_cash", 0.0),
+                "yesterday_tokens": sales_data.get("yesterday_tokens", 0),
                 "last_sync": sales_data.get("last_mp_sync")
             }
 
@@ -354,6 +455,7 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
         # 1. API: Obter Status Financeiro, Barbearia & Contadores de Vendas
         if path == '/api/vendas/status':
             with data_lock:
+                recalculate_totals_unlocked()
                 safe_copy = dict(sales_data)
                 safe_copy["pin_configured"] = bool(sales_data.get("security_pin"))
                 safe_copy["require_pin"] = sales_data.get("require_pin", False)
@@ -427,6 +529,7 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
         elif path == '/api/telemetria/eventos_recentes':
             since_id = int(query.get('since', [0])[0])
             with data_lock:
+                recalculate_totals_unlocked()
                 events = [e for e in sales_data["events"] if e["id"] > since_id]
                 last_id = sales_data["events"][-1]["id"] if sales_data["events"] else 0
             self.send_json(200, {
@@ -434,6 +537,11 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 "last_id": last_id,
                 "session_cash": sales_data.get("session_cash", 0.0),
                 "session_tokens": sales_data.get("session_tokens", 0),
+                "today_cash": sales_data.get("today_cash", 0.0),
+                "today_tokens": sales_data.get("today_tokens", 0),
+                "yesterday_cash": sales_data.get("yesterday_cash", 0.0),
+                "yesterday_tokens": sales_data.get("yesterday_tokens", 0),
+                "last_sangria": sales_data.get("last_sangria"),
                 "last_sync": sales_data.get("last_mp_sync")
             })
             return
@@ -508,26 +616,16 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                     valor_estimado = qtd * price
 
                     if modo == "venda":
-                        sales_data["session_cash"] += valor_estimado
-                        sales_data["session_tokens"] += qtd
-                        sales_data["paid_tokens"] += qtd
-                        sales_data["general_tokens"] += qtd
-                        sales_data["general_cash"] += valor_estimado
                         tipo_evento = "venda"
                         desc = f"Venda Manual ({qtd} fichas - R$ {valor_estimado:.2f})"
                     elif modo == "cortesia":
-                        sales_data["courtesy_tokens"] += qtd
-                        sales_data["general_tokens"] += qtd
                         tipo_evento = "cortesia"
                         desc = f"Cortesia / Bônus ({qtd} fichas)"
                         valor_estimado = 0.0
                     else:
-                        sales_data["maintenance_tokens"] += qtd
                         tipo_evento = "manutencao"
                         desc = f"Manutenção Técnica / Teste ({qtd} fichas)"
                         valor_estimado = 0.0
-
-                    save_data()
 
                 evt = add_event(tipo_evento, qtd, valor_estimado, desc, f"Celular 4G -> ESP-01S ({ip})")
                 print(f"[DISPARO RELÉ] {qtd} ficha(s) enviada(s) ao ESP-01S ({ip}) - Modo: {modo.upper()}")
@@ -584,22 +682,23 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             obs = req_data.get("observacao", "Fechamento de Caixa")
 
             with data_lock:
-                valor_sangria = sales_data["session_cash"]
-                fichas_sangria = sales_data["session_tokens"]
+                recalculate_totals_unlocked()
+                valor_sangria = sales_data.get("session_cash", 0.0)
+                fichas_sangria = sales_data.get("session_tokens", 0)
                 split = float(sales_data.get("barber_split_percent", 50)) / 100.0
                 barber_share = valor_sangria * split
                 owner_share = valor_sangria - barber_share
 
-                # Zera os contadores da sessão atual, mantendo o totalizador geral vitalício intacto
-                sales_data["session_cash"] = 0.0
-                sales_data["session_tokens"] = 0
-                sales_data["paid_tokens"] = 0
-                sales_data["courtesy_tokens"] = 0
-                save_data()
+                desc_sangria = f"Sangria por {responsavel}. Total: R$ {valor_sangria:.2f} (Barbearia: R$ {barber_share:.2f} | Seu: R$ {owner_share:.2f}). Obs: {obs}"
+                extra_sangria = {
+                    "responsavel": responsavel,
+                    "observacao": obs,
+                    "repasse_barbearia": round(barber_share, 2),
+                    "lucro_proprietario": round(owner_share, 2)
+                }
 
-            desc_sangria = f"Sangria por {responsavel}. Total: R$ {valor_sangria:.2f} (Barbearia: R$ {barber_share:.2f} | Seu: R$ {owner_share:.2f}). Obs: {obs}"
-            evt = add_event("sangria", fichas_sangria, valor_sangria, desc_sangria)
-            print(f"[FECHAMENTO CAIXA] R$ {valor_sangria:.2f} recolhido por {responsavel} (Repasse Barbearia: R$ {barber_share:.2f})")
+                evt = add_event("sangria", fichas_sangria, valor_sangria, desc_sangria, "Painel Gerencial", extra=extra_sangria)
+                print(f"[FECHAMENTO CAIXA] R$ {valor_sangria:.2f} recolhido por {responsavel} (Repasse Barbearia: R$ {barber_share:.2f})")
 
             self.send_json(200, {
                 "success": True,

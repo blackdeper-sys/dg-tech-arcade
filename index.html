@@ -164,6 +164,41 @@
       </div>
     </section>
 
+    <!-- BARRA DE PERFORMANCE DIÁRIA: HOJE, ONTEM & ÚLTIMA SANGRIA -->
+    <section class="daily-summary-strip">
+      <div class="daily-stat-card today-highlight">
+        <div class="daily-stat-icon">📅</div>
+        <div class="daily-stat-info">
+          <span class="daily-stat-title">VENDAS DE HOJE</span>
+          <div class="daily-stat-values">
+            <strong class="daily-stat-cash text-green font-digital" id="todayCashTotal">R$ 0,00</strong>
+            <span class="daily-stat-tokens" id="todayTokensCount">0 fichas</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="daily-stat-card yesterday-highlight">
+        <div class="daily-stat-icon">⏮️</div>
+        <div class="daily-stat-info">
+          <span class="daily-stat-title">VENDAS DE ONTEM</span>
+          <div class="daily-stat-values">
+            <strong class="daily-stat-cash text-yellow font-digital" id="yesterdayCashTotal">R$ 0,00</strong>
+            <span class="daily-stat-tokens" id="yesterdayTokensCount">0 fichas</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="daily-stat-card sangria-highlight">
+        <div class="daily-stat-icon">🔒</div>
+        <div class="daily-stat-info">
+          <span class="daily-stat-title">ÚLTIMO FECHAMENTO / SANGRIA</span>
+          <div class="daily-stat-values">
+            <span class="daily-stat-sangria-info text-blue font-mono" id="lastSangriaDisplay">Carregando...</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- 2. GRID DE CONTROLE FINANCEIRO & TELEMETRIA DE VENDAS -->
     <section class="telemetry-grid">
       <!-- Card 1: Caixa da Sessão Atual -->
@@ -377,6 +412,9 @@
       <div class="log-filter-bar">
         <div class="filter-group">
           <button class="filter-pill active" data-filter="all">Todos</button>
+          <button class="filter-pill" data-filter="hoje">📅 Hoje</button>
+          <button class="filter-pill" data-filter="ontem">⏮️ Ontem</button>
+          <button class="filter-pill" data-filter="sessao">⏳ Sessão Atual</button>
           <button class="filter-pill" data-filter="venda">💵 Vendas</button>
           <button class="filter-pill" data-filter="manutencao">🔧 Manutenções</button>
           <button class="filter-pill" data-filter="cortesia">🎁 Cortesias</button>

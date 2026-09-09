@@ -39,6 +39,13 @@ const defaultState = {
   authorizedCoinsToday: 0,
   lastCoinTime: 'Nenhum',
 
+  // Métricas Diárias & Fechamentos
+  todayCash: 0.00,
+  todayTokens: 0,
+  yesterdayCash: 0.00,
+  yesterdayTokens: 0,
+  lastSangria: null,
+
   // Lista de Eventos / Transações
   events: []
 };
@@ -47,6 +54,7 @@ let appState = { ...defaultState };
 let audioCtx = null;
 let currentFilter = 'all';
 let lastTelemetryEventId = 0;
+let isCoinFiring = false;
 
 // ==========================================================================
 // INICIALIZAÇÃO
@@ -99,6 +107,92 @@ function getPin() {
 }
 
 // ==========================================================================
+// CÁLCULO RESILIENTE DE TOTAIS & SESSÃO A PARTIR DOS EVENTOS
+// ==========================================================================
+function recalculateStateTotals() {
+  const events = appState.events || [];
+  let lastSangriaTs = 0;
+  let lastSangriaId = 0;
+  let lastSangriaInfo = null;
+
+  for (const evt of events) {
+    if (evt.tipo === 'sangria') {
+      const ts = Number(evt.timestamp) || 0;
+      if (ts >= lastSangriaTs) {
+        lastSangriaTs = ts;
+        lastSangriaId = Number(evt.id) || 0;
+        lastSangriaInfo = {
+          data: evt.data || '',
+          hora: evt.hora || '',
+          valor: Number(evt.valor) || 0,
+          fichas: Number(evt.fichas) || 0,
+          responsavel: evt.responsavel || 'Operador'
+        };
+      }
+    }
+  }
+
+  const todayStr = new Date().toLocaleDateString('pt-BR');
+  const yDate = new Date();
+  yDate.setDate(yDate.getDate() - 1);
+  const yesterdayStr = yDate.toLocaleDateString('pt-BR');
+
+  let sCash = 0;
+  let sTokens = 0;
+  let sPaid = 0;
+  let sCourtesy = 0;
+  let sMaint = 0;
+
+  let todayCash = 0;
+  let todayTokens = 0;
+  let yesterdayCash = 0;
+  let yesterdayTokens = 0;
+
+  for (const evt of events) {
+    const ts = Number(evt.timestamp) || 0;
+    const id = Number(evt.id) || 0;
+    const val = Number(evt.valor) || 0;
+    const fichas = Number(evt.fichas) || 0;
+    const dataStr = evt.data || '';
+
+    if (evt.tipo === 'venda') {
+      if (dataStr === todayStr) {
+        todayCash += val;
+        todayTokens += fichas;
+      } else if (dataStr === yesterdayStr) {
+        yesterdayCash += val;
+        yesterdayTokens += fichas;
+      }
+    }
+
+    // Apenas eventos ocorridos ESTRITAMENTE após a última sangria compõem o caixa atual
+    if (ts > lastSangriaTs || (ts === lastSangriaTs && id > lastSangriaId)) {
+      if (evt.tipo === 'venda') {
+        sCash += val;
+        sTokens += fichas;
+        sPaid += fichas;
+      } else if (evt.tipo === 'cortesia') {
+        sTokens += fichas;
+        sCourtesy += fichas;
+      } else if (evt.tipo === 'manutencao') {
+        sMaint += fichas;
+      }
+    }
+  }
+
+  appState.sessionCash = Math.round(sCash * 100) / 100;
+  appState.sessionTokens = sTokens;
+  appState.paidTokens = sPaid;
+  appState.courtesyTokens = sCourtesy;
+  appState.maintenanceTokens = sMaint;
+  appState.todayCash = Math.round(todayCash * 100) / 100;
+  appState.todayTokens = todayTokens;
+  appState.yesterdayCash = Math.round(yesterdayCash * 100) / 100;
+  appState.yesterdayTokens = yesterdayTokens;
+  appState.lastSangria = lastSangriaInfo;
+}
+
+// ==========================================================================
 // PERSISTÊNCIA & SINCRONIZAÇÃO COM O BACKEND
 // ==========================================================================
 function loadLocalState() {
@@ -110,6 +204,7 @@ function loadLocalState() {
         parsed.esp01Ip = '192.168.18.99';
       }
       appState = { ...defaultState, ...parsed };
+      recalculateStateTotals();
     }
   } catch (e) {
     console.warn('Erro ao ler localStorage:', e);
@@ -148,27 +243,30 @@ async function fetchServerStatus() {
     }
 
     if (s) {
-      appState.sessionCash = s.session_cash ?? appState.sessionCash;
-      appState.sessionTokens = s.session_tokens ?? appState.sessionTokens;
-      appState.paidTokens = s.paid_tokens ?? appState.paidTokens;
-      appState.courtesyTokens = s.courtesy_tokens ?? appState.courtesyTokens;
-      appState.maintenanceTokens = s.maintenance_tokens ?? appState.maintenanceTokens;
-      appState.generalTokens = s.general_tokens ?? appState.generalTokens;
-      appState.generalCash = s.general_cash ?? appState.generalCash;
-      appState.tokenPrice = s.price_per_token ?? appState.tokenPrice;
-      appState.requirePin = s.require_pin ?? appState.requirePin;
-      appState.barberSplitPercent = s.barber_split_percent ?? appState.barberSplitPercent;
+      if (s.events && s.events.length > 0) {
+        // Fusão inteligente de eventos sem perder sangrias locais
+        const eventMap = new Map();
+        (appState.events || []).forEach(e => eventMap.set(String(e.id), e));
+        s.events.forEach(e => eventMap.set(String(e.id), e));
+        appState.events = Array.from(eventMap.values());
+        appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
+        if (appState.events.length > 350) appState.events = appState.events.slice(-350);
+        lastTelemetryEventId = appState.events[appState.events.length - 1].id;
+      }
+
+      if (s.general_tokens !== undefined) appState.generalTokens = s.general_tokens;
+      if (s.general_cash !== undefined) appState.generalCash = s.general_cash;
+      if (s.price_per_token !== undefined) appState.tokenPrice = s.price_per_token;
+      if (s.require_pin !== undefined) appState.requirePin = s.require_pin;
+      if (s.barber_split_percent !== undefined) appState.barberSplitPercent = s.barber_split_percent;
 
       const mpText = document.getElementById('mpSyncText');
       if (mpText) {
         mpText.textContent = s.last_mp_sync ? `BARBEARIA (${s.last_mp_sync})` : 'BARBEARIA (PIX NUVEM)';
       }
 
-      if (s.events && s.events.length > 0) {
-        s.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
-        appState.events = s.events;
-        lastTelemetryEventId = s.events[s.events.length - 1].id;
-      }
+      // Recalcula totais baseado nos eventos para que o caixa NUNCA reabra após sangria
+      recalculateStateTotals();
 
       saveLocalState();
       renderAllData();
@@ -218,37 +316,63 @@ function triggerLocalRelayHardware(ip, qtd) {
 }
 
 async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto') {
+  if (isCoinFiring) {
+    appendHardwareFeed('[SEGURANÇA] Disparo em processamento. Aguarde...');
+    return false;
+  }
+  isCoinFiring = true;
+
+  const btnFire = document.getElementById('btnAuthorizeCoin');
+  if (btnFire) {
+    btnFire.classList.add('btn-firing');
+    btnFire.disabled = true;
+  }
+
   const ip = getEsp01Ip();
   const pin = getPin();
 
-  appendHardwareFeed(`[ESP-01S] Enviando disparo de ${qtd} ficha(s) (Modo: ${modo.toUpperCase()}) para ${ip}...`);
+  appendHardwareFeed(`[ESP-01S] Disparando ${qtd} ficha(s) (Modo: ${modo.toUpperCase()}) para ${ip}...`);
 
-  // Disparo físico direto na rede Wi-Fi via form target (não é bloqueado por Mixed Content)
-  triggerLocalRelayHardware(ip, qtd);
-
-  let backendSuccess = false;
+  let dispatched = false;
   let backendEvent = null;
 
   try {
+    // 1. Tenta envio com o servidor backend (timeout rápido de 3.5s)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
     const url = `${getApiBase()}/api/esp01/credito?ip=${encodeURIComponent(ip)}&qtd=${qtd}&modo=${modo}&motivo=${encodeURIComponent(motivo)}&pin=${encodeURIComponent(pin)}`;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
 
     if (resp.status === 403) {
       playBuzzerSound();
       appendHardwareFeed(`[SEGURANÇA] PIN incorreto! Verifique o PIN de acesso.`);
       alert('PIN de segurança incorreto! Verifique a senha de acesso.');
+      if (btnFire) {
+        btnFire.classList.remove('btn-firing');
+        btnFire.disabled = false;
+      }
+      isCoinFiring = false;
       return false;
     }
 
     if (resp.ok) {
       const data = await resp.json();
       if (data.success) {
-        backendSuccess = true;
+        dispatched = true;
         backendEvent = data.event;
+        appendHardwareFeed(`[DISPARO OK] ${qtd} ficha(s) liberada(s) com sucesso via servidor!`);
       }
     }
   } catch (err) {
-    // Normal em sites estáticos ou Render (onde nuvem não acessa o IP da barbearia)
+    // Normal se o servidor for na nuvem (Render) e não alcançar a rede interna local
+  }
+
+  // 2. APENAS se o servidor não realizou o disparo físico, dispara diretamente no relé local
+  if (!dispatched) {
+    appendHardwareFeed(`[DISPARO DIRETO] Acionando relé direto na rede Wi-Fi local (${ip})...`);
+    triggerLocalRelayHardware(ip, qtd);
+    dispatched = true;
   }
 
   // Executa ações sonoras e visuais locais de confirmação
@@ -281,26 +405,31 @@ async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto') {
   // Atualiza estado financeiro local
   const valor = qtd * appState.tokenPrice;
   if (modo === 'venda') {
-    appState.sessionCash += valor;
-    appState.sessionTokens += qtd;
-    appState.paidTokens += qtd;
     appState.generalTokens += qtd;
     appState.generalCash += valor;
     appendHardwareFeed(`[VENDA SUCESSO] ${qtd} ficha(s) liberada(s) (R$ ${formatCurrency(valor)})!`);
     showToast(`🪙 ${qtd} ficha(s) vendida(s) no relé!`);
   } else if (modo === 'cortesia') {
-    appState.courtesyTokens += qtd;
     appState.generalTokens += qtd;
     appendHardwareFeed(`[CORTESIA SUCESSO] ${qtd} ficha(s) cortesia liberada(s)!`);
     showToast(`🎁 ${qtd} ficha(s) cortesia liberada(s)!`);
   } else {
-    appState.maintenanceTokens += qtd;
     appendHardwareFeed(`[MANUTENÇÃO SUCESSO] ${qtd} ficha(s) técnica(s) disparada(s) no relé (${ip})!`);
     showToast(`⚡ ${qtd} pulso(s) disparado(s) no relé!`);
   }
 
+  recalculateStateTotals();
   saveLocalState();
   renderAllData();
+
+  setTimeout(() => {
+    isCoinFiring = false;
+    if (btnFire) {
+      btnFire.classList.remove('btn-firing');
+      btnFire.disabled = false;
+    }
+  }, 1200);
+
   return true;
 }
 
@@ -363,6 +492,8 @@ function startTelemetryPolling() {
       const resp = await fetch(`${getApiBase()}/api/telemetria/eventos_recentes?since=${lastTelemetryEventId}`);
       if (!resp.ok) return;
       const data = await resp.json();
+      let stateChanged = false;
+
       if (data.events && data.events.length > 0) {
         let hasNewVenda = false;
         data.events.forEach(evt => {
@@ -386,8 +517,16 @@ function startTelemetryPolling() {
           playCoinSound();
           triggerScreenFlash();
         }
-        if (data.session_cash !== undefined) appState.sessionCash = data.session_cash;
-        if (data.session_tokens !== undefined) appState.sessionTokens = data.session_tokens;
+        stateChanged = true;
+      }
+
+      if (data.last_sync) {
+        const mpText = document.getElementById('mpSyncText');
+        if (mpText) mpText.textContent = `BARBEARIA (${data.last_sync})`;
+      }
+
+      recalculateStateTotals();
+      if (stateChanged || data.session_cash !== undefined) {
         saveLocalState();
         renderAllData();
       }
@@ -431,10 +570,6 @@ async function executeSangria(responsavel, observacao, shouldGenPdf = true) {
   }
 
   playSuccessChime();
-  appState.sessionCash = 0.00;
-  appState.sessionTokens = 0;
-  appState.paidTokens = 0;
-  appState.courtesyTokens = 0;
 
   const event = serverEvent || {
     id: Date.now(),
@@ -459,6 +594,9 @@ async function executeSangria(responsavel, observacao, shouldGenPdf = true) {
     appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
     if (appState.events.length > 350) appState.events = appState.events.slice(-350);
   }
+
+  // Recalcula totais a partir dos eventos (zera sessionCash e sessionTokens com precisão definitiva)
+  recalculateStateTotals();
 
   saveLocalState();
   renderAllData();
@@ -553,6 +691,18 @@ function renderAllData() {
   setText('authorizedCoinsCount', appState.authorizedCoinsToday);
   setText('lastCoinTime', appState.lastCoinTime || 'Nenhum');
 
+  // Métricas Diárias & Fechamentos
+  setText('todayCashTotal', `R$ ${formatCurrency(appState.todayCash || 0)}`);
+  setText('todayTokensCount', `${appState.todayTokens || 0} fichas`);
+  setText('yesterdayCashTotal', `R$ ${formatCurrency(appState.yesterdayCash || 0)}`);
+  setText('yesterdayTokensCount', `${appState.yesterdayTokens || 0} fichas`);
+
+  if (appState.lastSangria) {
+    setText('lastSangriaDisplay', `${appState.lastSangria.data} ${appState.lastSangria.hora} (R$ ${formatCurrency(appState.lastSangria.valor)})`);
+  } else {
+    setText('lastSangriaDisplay', 'Nenhuma registrada');
+  }
+
   // Divisão Financeira da Barbearia
   const splitPercent = appState.barberSplitPercent ?? 50;
   const barberVal = (appState.sessionCash * splitPercent) / 100.0;
@@ -620,9 +770,20 @@ function renderLogsTable() {
   const search = (document.getElementById('logSearchInput')?.value || '').toLowerCase().trim();
 
   let filtered = appState.events || [];
-  if (currentFilter !== 'all') {
+  if (currentFilter === 'hoje') {
+    const todayStr = new Date().toLocaleDateString('pt-BR');
+    filtered = filtered.filter(e => e.data === todayStr);
+  } else if (currentFilter === 'ontem') {
+    const yDate = new Date();
+    yDate.setDate(yDate.getDate() - 1);
+    const yesterdayStr = yDate.toLocaleDateString('pt-BR');
+    filtered = filtered.filter(e => e.data === yesterdayStr);
+  } else if (currentFilter === 'sessao') {
+    filtered = getSessionEvents();
+  } else if (currentFilter !== 'all') {
     filtered = filtered.filter(e => e.tipo === currentFilter);
   }
+
   if (search) {
     filtered = filtered.filter(e => 
       (e.descricao && e.descricao.toLowerCase().includes(search)) ||

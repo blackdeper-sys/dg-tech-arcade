@@ -2296,6 +2296,188 @@ input:checked + .slider::before {
   border: 1px solid rgba(255, 77, 109, 0.35);
 }
 
+.sangria-summary-box {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.sangria-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.sangria-row:last-child {
+  border-bottom: none;
+}
+
+.text-large {
+  font-size: 1.3rem;
+  font-family: var(--font-hud);
+}
+
+/* Otimizações Específicas para Celular (Mobile) */
+@media (max-width: 768px) {
+  .hero-card-content {
+    flex-direction: column;
+  }
+
+  .hero-action-container {
+    width: 100%;
+    margin-top: 1rem;
+  }
+
+  .btn-arcade-fire {
+    width: 100%;
+    min-height: 85px;
+  }
+
+  .telemetry-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+  }
+
+  .middle-layout-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .header-clock {
+    display: none;
+  }
+
+  .app-header {
+    padding: 0.6rem 1rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .telemetry-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-pill-group {
+    grid-template-columns: 1fr;
+  }
+
+  .token-buttons-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .custom-qty-wrapper {
+    grid-column: span 2;
+    justify-content: space-between;
+  }
+}
+/* ==========================================================================
+   MELHORIAS: MONITORAMENTO BARBEARIA & PIX NUVEM
+   ========================================================================== */
+.card-footer-split {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.sangria-split-box {
+  margin-top: 0.85rem;
+  padding: 0.85rem 1rem;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.split-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.modal-qr {
+  max-width: 440px;
+}
+
+.qr-code-wrapper {
+  margin: 1.25rem auto;
+  padding: 1rem;
+  background: #ffffff;
+  border-radius: 12px;
+  display: inline-block;
+  box-shadow: 0 0 25px rgba(0, 229, 255, 0.3);
+}
+
+.qr-image {
+  display: block;
+  width: 220px;
+  height: 220px;
+  object-fit: contain;
+}
+
+.qr-url-box {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+
+.btn-copy {
+  white-space: nowrap;
+}
+
+.event-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 4px;
+  font-family: var(--font-data);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.badge-pix {
+  background: rgba(0, 229, 255, 0.15);
+  color: #00e5ff;
+  border: 1px solid rgba(0, 229, 255, 0.4);
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.25);
+}
+
+.badge-venda {
+  background: rgba(0, 240, 118, 0.15);
+  color: #00f076;
+  border: 1px solid rgba(0, 240, 118, 0.35);
+}
+
+.badge-manutencao {
+  background: rgba(0, 153, 255, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(0, 153, 255, 0.35);
+}
+
+.badge-cortesia {
+  background: rgba(255, 209, 102, 0.15);
+  color: #ffd166;
+  border: 1px solid rgba(255, 209, 102, 0.35);
+}
+
+.badge-sangria {
+  background: rgba(255, 77, 109, 0.15);
+  color: #ff4d6d;
+  border: 1px solid rgba(255, 77, 109, 0.35);
+}
+
 .toast-notification {
   position: fixed;
   bottom: 2rem;
@@ -2319,4 +2501,103 @@ input:checked + .slider::before {
 @keyframes slide-up-toast {
   0% { transform: translateY(50px); opacity: 0; }
   100% { transform: translateY(0); opacity: 1; }
+}
+
+/* ==========================================================================
+   BARRA DE PERFORMANCE DIÁRIA & DEBOUNCE LOCK
+   ========================================================================== */
+.daily-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.daily-stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 1.1rem 1.3rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  transition: transform var(--trans-fast), border-color var(--trans-fast);
+}
+
+.daily-stat-card:hover {
+  transform: translateY(-2px);
+}
+
+.daily-stat-card.today-highlight {
+  border-left: 4px solid var(--green-active);
+  background: linear-gradient(135deg, rgba(0, 240, 118, 0.06) 0%, var(--bg-card) 100%);
+}
+
+.daily-stat-card.yesterday-highlight {
+  border-left: 4px solid var(--coin-gold);
+  background: linear-gradient(135deg, rgba(255, 209, 102, 0.06) 0%, var(--bg-card) 100%);
+}
+
+.daily-stat-card.sangria-highlight {
+  border-left: 4px solid var(--blue-tech);
+  background: linear-gradient(135deg, rgba(0, 210, 255, 0.06) 0%, var(--bg-card) 100%);
+}
+
+.daily-stat-icon {
+  font-size: 1.8rem;
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.daily-stat-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.daily-stat-title {
+  font-family: var(--font-hud);
+  font-size: 0.72rem;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+
+.daily-stat-values {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.daily-stat-cash {
+  font-size: 1.35rem;
+  font-family: var(--font-data);
+  font-weight: 700;
+}
+
+.daily-stat-tokens {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-family: var(--font-hud);
+}
+
+.daily-stat-sangria-info {
+  font-size: 0.88rem;
+  word-break: break-word;
+}
+
+/* Feedback de Disparo Ativo (Debounce lock) */
+.btn-firing {
+  opacity: 0.65 !important;
+  pointer-events: none !important;
+  filter: grayscale(0.5);
+  cursor: wait !important;
 }
