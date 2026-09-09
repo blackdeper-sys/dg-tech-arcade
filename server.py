@@ -60,6 +60,7 @@ sales_data = {
     "last_mp_status": "Iniciando...",
     "events": [],
     "closed_registers": [],
+    "closed_quinzenas": [],
     "daily_sales": []
 }
 
@@ -175,6 +176,8 @@ def recalculate_totals_unlocked():
     # Sincronização permanente dos caixas fechados (closed_registers)
     if "closed_registers" not in sales_data:
         sales_data["closed_registers"] = []
+    if "closed_quinzenas" not in sales_data:
+        sales_data["closed_quinzenas"] = []
 
     existing_signatures = {(float(r.get("timestamp", 0)), float(r.get("valor", 0))) for r in sales_data["closed_registers"]}
     existing_event_ids = {r.get("event_id") for r in sales_data["closed_registers"] if r.get("event_id")}
@@ -222,6 +225,8 @@ def load_data():
                     sales_data["processed_mp_ids"] = []
                 if "barber_split_percent" not in sales_data:
                     sales_data["barber_split_percent"] = 50
+                if "closed_quinzenas" not in sales_data:
+                    sales_data["closed_quinzenas"] = []
                 if "mp_access_token" not in sales_data or not sales_data["mp_access_token"]:
                     sales_data["mp_access_token"] = DEFAULT_MP_TOKEN
                 if "events" in sales_data and sales_data["events"]:
@@ -604,9 +609,17 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 "yesterday_tokens": sales_data.get("yesterday_tokens", 0),
                 "last_sangria": sales_data.get("last_sangria"),
                 "closed_registers": sales_data.get("closed_registers", []),
+                "closed_quinzenas": sales_data.get("closed_quinzenas", []),
                 "daily_sales": sales_data.get("daily_sales", []),
                 "last_sync": sales_data.get("last_mp_sync")
             })
+            return
+
+        # 9. API: Obter Histórico de Quinzenas Fechadas
+        elif path == '/api/quinzenal/historico':
+            with data_lock:
+                quinzenas = sales_data.get("closed_quinzenas", [])
+            self.send_json(200, {"success": True, "closed_quinzenas": quinzenas})
             return
 
         # Arquivos estáticos normais (HTML, JS, CSS, PNG)
@@ -639,6 +652,11 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
         # 5. API: Atualizar Nome do Cliente da Venda
         elif path == '/api/vendas/cliente':
             self.post_update_cliente()
+            return
+
+        # 6. API: Fechamento de Caixa Quinzenal
+        elif path == '/api/quinzenal/fechar':
+            self.post_fechar_quinzena()
             return
 
         self.send_json(404, {"error": "Rota não encontrada"})
@@ -738,7 +756,11 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
     def post_sangria(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
-            raw_body = self.rfile.read(length).decode('utf-8')
+            raw_bytes = self.rfile.read(length)
+            try:
+                raw_body = raw_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                raw_body = raw_bytes.decode('latin-1', errors='replace')
             req_data = json.loads(raw_body) if raw_body else {}
 
             responsavel = req_data.get("responsavel", "Operador")
@@ -772,6 +794,87 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 "event": evt,
                 "closed_registers": sales_data.get("closed_registers", []),
                 "last_sangria": sales_data.get("last_sangria")
+            })
+        except Exception as e:
+            self.send_json(500, {"success": False, "error": str(e)})
+
+    def post_fechar_quinzena(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw_bytes = self.rfile.read(length)
+            try:
+                raw_body = raw_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                raw_body = raw_bytes.decode('latin-1', errors='replace')
+            req_data = json.loads(raw_body) if raw_body else {}
+
+            responsavel = req_data.get("responsavel", "Daniel")
+            observacao = req_data.get("observacao", "Fechamento Quinzenal")
+            periodo_label = req_data.get("periodo_label", "1ª Quinzena")
+            data_inicio = req_data.get("data_inicio", "")
+            data_fim = req_data.get("data_fim", "")
+            valor_total = float(req_data.get("valor_total", 0.0))
+            fichas = int(req_data.get("fichas", 0))
+            split_pct = float(req_data.get("split_percent", sales_data.get("barber_split_percent", 50)))
+            barber_share = float(req_data.get("barber_share", (valor_total * split_pct) / 100.0))
+            owner_share = float(req_data.get("owner_share", valor_total - barber_share))
+            efetuar_sangria = bool(req_data.get("efetuar_sangria", False))
+
+            now_br = datetime.now(BRAZIL_TZ)
+            data_fechamento = now_br.strftime("%d/%m/%Y")
+            hora_fechamento = now_br.strftime("%H:%M:%S")
+            ts_fechamento = now_br.timestamp()
+
+            with data_lock:
+                if "closed_quinzenas" not in sales_data:
+                    sales_data["closed_quinzenas"] = []
+
+                reg_quinzena = {
+                    "id": len(sales_data["closed_quinzenas"]) + 1,
+                    "periodo_label": periodo_label,
+                    "data_inicio": data_inicio,
+                    "data_fim": data_fim,
+                    "data_fechamento": data_fechamento,
+                    "hora_fechamento": hora_fechamento,
+                    "timestamp": ts_fechamento,
+                    "valor_total": round(valor_total, 2),
+                    "fichas": fichas,
+                    "split_percent": int(split_pct),
+                    "barber_share": round(barber_share, 2),
+                    "owner_share": round(owner_share, 2),
+                    "responsavel": responsavel,
+                    "observacao": observacao,
+                    "status": "Fechada / Auditada"
+                }
+                sales_data["closed_quinzenas"].append(reg_quinzena)
+
+                sangria_evt = None
+                if efetuar_sangria and sales_data.get("session_cash", 0.0) > 0:
+                    v_sangria = sales_data.get("session_cash", 0.0)
+                    f_sangria = sales_data.get("session_tokens", 0)
+                    b_share = round((v_sangria * split_pct) / 100.0, 2)
+                    o_share = round(v_sangria - b_share, 2)
+                    desc_sangria = f"Fechamento Quinzenal ({periodo_label}) por {responsavel}. Total: R$ {v_sangria:.2f} (Barbearia: R$ {b_share:.2f} | Seu: R$ {o_share:.2f}). Obs: {observacao}"
+                    extra_sangria = {
+                        "responsavel": responsavel,
+                        "observacao": f"Fechamento Quinzenal ({periodo_label})",
+                        "repasse_barbearia": b_share,
+                        "lucro_proprietario": o_share
+                    }
+                    sangria_evt = add_event("sangria", f_sangria, v_sangria, desc_sangria, "Painel Quinzenal", extra=extra_sangria)
+
+                recalculate_totals_unlocked()
+                save_data()
+
+                print(f"[FECHAMENTO QUINZENAL] {periodo_label} encerrada por {responsavel}. Total: R$ {valor_total:.2f} (Barbearia: R$ {barber_share:.2f} | Daniel: R$ {owner_share:.2f})")
+
+            self.send_json(200, {
+                "success": True,
+                "quinzena": reg_quinzena,
+                "closed_quinzenas": sales_data.get("closed_quinzenas", []),
+                "sangria_realizada": bool(sangria_evt),
+                "session_cash": sales_data.get("session_cash", 0.0),
+                "session_tokens": sales_data.get("session_tokens", 0)
             })
         except Exception as e:
             self.send_json(500, {"success": False, "error": str(e)})

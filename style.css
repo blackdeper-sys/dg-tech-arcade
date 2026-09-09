@@ -2601,3 +2601,374 @@ input:checked + .slider::before {
   filter: grayscale(0.5);
   cursor: wait !important;
 }
+
+/* ==========================================================================
+   CENTRAL DE FECHAMENTO DE CAIXA QUINZENAL (15 DIAS)
+   ========================================================================== */
+.quinzenal-panel {
+  border-top: 2px solid var(--blue-tech);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.8), 0 0 20px rgba(0, 210, 255, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+
+.quinzenal-status-badge {
+  font-family: var(--font-hud);
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 0.35rem 0.85rem;
+  border-radius: 20px;
+  letter-spacing: 0.8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.quinzenal-status-badge.status-open {
+  background: rgba(255, 209, 102, 0.15);
+  border: 1px solid var(--coin-gold);
+  color: var(--coin-gold);
+  box-shadow: 0 0 12px rgba(255, 209, 102, 0.25);
+}
+
+.quinzenal-status-badge.status-closed {
+  background: rgba(0, 240, 118, 0.15);
+  border: 1px solid var(--green-active);
+  color: var(--green-active);
+  box-shadow: 0 0 12px rgba(0, 240, 118, 0.25);
+}
+
+.quinzenal-control-bar {
+  background: #0d0d14;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 0.9rem 1.1rem;
+  margin-bottom: 1.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.quinzenal-selector-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.selector-title-mini {
+  font-family: var(--font-hud);
+  font-size: 0.72rem;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+}
+
+.quinzenal-pills-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.quinzenal-pill {
+  background: #151520;
+  border: 1px solid #28283c;
+  color: var(--text-muted);
+  border-radius: 8px;
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  transition: all 0.2s ease;
+  min-width: 140px;
+}
+
+.quinzenal-pill:hover {
+  background: #1c1c2b;
+  border-color: rgba(0, 210, 255, 0.4);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.quinzenal-pill.active {
+  background: linear-gradient(135deg, rgba(0, 210, 255, 0.2), rgba(15, 15, 25, 0.9));
+  border-color: var(--blue-tech);
+  color: #ffffff;
+  box-shadow: 0 0 14px rgba(0, 210, 255, 0.3);
+}
+
+.quinzenal-pill .pill-label {
+  font-family: var(--font-hud);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.quinzenal-pill .pill-dates {
+  font-family: var(--font-data);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.quinzenal-pill.active .pill-dates {
+  color: var(--blue-tech);
+  font-weight: 600;
+}
+
+.quinzenal-custom-dates-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.custom-date-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.quinzenal-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.3rem;
+}
+
+.q-metric-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.q-metric-card:hover {
+  transform: translateY(-2px);
+}
+
+.q-card-gross {
+  border-color: rgba(255, 209, 102, 0.3);
+}
+.q-card-gross:hover {
+  border-color: var(--coin-gold);
+  box-shadow: 0 4px 20px rgba(255, 209, 102, 0.15);
+}
+
+.q-card-barber {
+  border-color: rgba(255, 170, 0, 0.3);
+}
+.q-card-barber:hover {
+  border-color: #ffaa00;
+  box-shadow: 0 4px 20px rgba(255, 170, 0, 0.15);
+}
+
+.q-card-owner {
+  border-color: rgba(0, 240, 118, 0.3);
+}
+.q-card-owner:hover {
+  border-color: var(--green-active);
+  box-shadow: 0 4px 20px rgba(0, 240, 118, 0.15);
+}
+
+.q-card-perf {
+  border-color: rgba(0, 210, 255, 0.3);
+}
+.q-card-perf:hover {
+  border-color: var(--blue-tech);
+  box-shadow: 0 4px 20px rgba(0, 210, 255, 0.15);
+}
+
+.q-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.q-card-tag {
+  font-family: var(--font-hud);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+}
+
+.q-card-icon {
+  font-size: 1.15rem;
+}
+
+.q-metric-label {
+  font-family: var(--font-data);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.q-metric-val {
+  font-size: 1.7rem;
+  font-weight: 700;
+  line-height: 1.1;
+  margin: 0.2rem 0;
+}
+
+.q-metric-sub {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.quinzenal-actions-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 1.4rem;
+}
+
+.btn-q-action {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: left;
+  border: 1px solid transparent;
+}
+
+.btn-q-action .btn-icon-q {
+  font-size: 1.4rem;
+  flex-shrink: 0;
+}
+
+.btn-q-action .btn-text-q {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.btn-q-action .btn-text-q strong {
+  font-family: var(--font-hud);
+  font-size: 0.82rem;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-q-action .btn-text-q small {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-q-close {
+  background: linear-gradient(135deg, rgba(0, 200, 83, 0.2), rgba(15, 25, 20, 0.9));
+  border-color: rgba(0, 230, 118, 0.4);
+  color: #00e676;
+}
+.btn-q-close:hover {
+  background: linear-gradient(135deg, rgba(0, 200, 83, 0.35), rgba(15, 35, 20, 0.95));
+  border-color: #00e676;
+  box-shadow: 0 0 16px rgba(0, 230, 118, 0.3);
+  transform: translateY(-2px);
+}
+
+.btn-q-pdf {
+  background: linear-gradient(135deg, rgba(0, 210, 255, 0.18), rgba(15, 20, 30, 0.9));
+  border-color: rgba(0, 210, 255, 0.4);
+  color: #00d2ff;
+}
+.btn-q-pdf:hover {
+  background: linear-gradient(135deg, rgba(0, 210, 255, 0.32), rgba(15, 25, 40, 0.95));
+  border-color: #00d2ff;
+  box-shadow: 0 0 16px rgba(0, 210, 255, 0.3);
+  transform: translateY(-2px);
+}
+
+.btn-q-whatsapp {
+  background: linear-gradient(135deg, rgba(37, 211, 102, 0.18), rgba(15, 25, 20, 0.9));
+  border-color: rgba(37, 211, 102, 0.4);
+  color: #25d366;
+}
+.btn-q-whatsapp:hover {
+  background: linear-gradient(135deg, rgba(37, 211, 102, 0.32), rgba(15, 35, 20, 0.95));
+  border-color: #25d366;
+  box-shadow: 0 0 16px rgba(37, 211, 102, 0.3);
+  transform: translateY(-2px);
+}
+
+.btn-q-csv {
+  background: linear-gradient(135deg, rgba(255, 209, 102, 0.15), rgba(25, 20, 15, 0.9));
+  border-color: rgba(255, 209, 102, 0.4);
+  color: var(--coin-gold);
+}
+.btn-q-csv:hover {
+  background: linear-gradient(135deg, rgba(255, 209, 102, 0.28), rgba(35, 25, 15, 0.95));
+  border-color: var(--coin-gold);
+  box-shadow: 0 0 16px rgba(255, 209, 102, 0.3);
+  transform: translateY(-2px);
+}
+
+.quinzenal-subtable-container {
+  background: #0c0c12;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.subtable-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.8rem;
+}
+
+.subtable-title {
+  font-family: var(--font-hud);
+  font-size: 0.82rem;
+  letter-spacing: 0.8px;
+  color: #e2e8f0;
+}
+
+.subtable-counter {
+  font-family: var(--font-data);
+  font-size: 0.8rem;
+  color: var(--blue-tech);
+  font-weight: 600;
+}
+
+/* Responsividade Quinzenal */
+@media (max-width: 1024px) {
+  .quinzenal-metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .quinzenal-actions-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .quinzenal-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+  .quinzenal-actions-row {
+    grid-template-columns: 1fr;
+  }
+  .quinzenal-pills-row {
+    flex-direction: column;
+  }
+  .quinzenal-pill {
+    width: 100%;
+  }
+}

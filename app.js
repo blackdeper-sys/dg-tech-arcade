@@ -46,7 +46,9 @@ const defaultState = {
   yesterdayTokens: 0,
   lastSangria: null,
   closedRegisters: [],
+  closedQuinzenas: [],
   dailySales: [],
+  quinzenalFilter: 'current_1',
 
   // Lista de Eventos / Transações
   events: []
@@ -394,6 +396,9 @@ async function fetchServerStatus() {
       if (s.closed_registers && Array.isArray(s.closed_registers) && s.closed_registers.length > 0) {
         appState.closedRegisters = s.closed_registers;
       }
+      if (s.closed_quinzenas && Array.isArray(s.closed_quinzenas)) {
+        appState.closedQuinzenas = s.closed_quinzenas;
+      }
       if (s.daily_sales && Array.isArray(s.daily_sales) && s.daily_sales.length > 0) {
         appState.dailySales = s.daily_sales;
       }
@@ -666,6 +671,9 @@ function startTelemetryPolling() {
       if (data.closed_registers && Array.isArray(data.closed_registers) && data.closed_registers.length > 0) {
         appState.closedRegisters = data.closed_registers;
       }
+      if (data.closed_quinzenas && Array.isArray(data.closed_quinzenas)) {
+        appState.closedQuinzenas = data.closed_quinzenas;
+      }
       if (data.daily_sales && Array.isArray(data.daily_sales) && data.daily_sales.length > 0) {
         appState.dailySales = data.daily_sales;
       }
@@ -878,6 +886,9 @@ function renderAllData() {
 
   // Renderiza Tabela de Caixas Fechados Anteriores
   renderClosedRegistersTable();
+
+  // Renderiza Central de Fechamento Quinzenal (15 Dias)
+  renderQuinzenalSection();
 
   // Divisão Financeira da Barbearia
   const splitPercent = appState.barberSplitPercent ?? 50;
@@ -1130,6 +1141,790 @@ function downloadClosedRegisterPdf(regId) {
   });
 }
 window.downloadClosedRegisterPdf = downloadClosedRegisterPdf;
+
+// ==========================================================================
+// CENTRAL DE FECHAMENTO DE CAIXA QUINZENAL (15 DIAS)
+// ==========================================================================
+
+let currentQuinzenaData = null;
+
+function getQuinzenaDateBounds(filterType) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+
+  const monthNames = [
+    'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+  ];
+
+  if (filterType === 'current_1') {
+    const startDate = new Date(year, month, 1, 0, 0, 0, 0);
+    const endDate = new Date(year, month, 15, 23, 59, 59, 999);
+    const mm = String(month + 1).padStart(2, '0');
+    return {
+      type: 'current_1',
+      label: `1ª Quinzena de ${monthNames[month]}/${year} (01/${mm} a 15/${mm})`,
+      shortLabel: `1ª Quinzena (01/${mm} a 15/${mm})`,
+      startDateStr: `01/${mm}/${year}`,
+      endDateStr: `15/${mm}/${year}`,
+      startDate,
+      endDate
+    };
+  } else if (filterType === 'current_2') {
+    const startDate = new Date(year, month, 16, 0, 0, 0, 0);
+    const endDate = new Date(year, month + 1, 0, 23, 59, 59, 999);
+    const mm = String(month + 1).padStart(2, '0');
+    const lastDay = String(endDate.getDate()).padStart(2, '0');
+    return {
+      type: 'current_2',
+      label: `2ª Quinzena de ${monthNames[month]}/${year} (16/${mm} a ${lastDay}/${mm})`,
+      shortLabel: `2ª Quinzena (16/${mm} a ${lastDay}/${mm})`,
+      startDateStr: `16/${mm}/${year}`,
+      endDateStr: `${lastDay}/${mm}/${year}`,
+      startDate,
+      endDate
+    };
+  } else if (filterType === 'prev_2') {
+    const prevMonth = month === 0 ? 11 : month - 1;
+    const prevYear = month === 0 ? year - 1 : year;
+    const startDate = new Date(prevYear, prevMonth, 16, 0, 0, 0, 0);
+    const endDate = new Date(prevYear, prevMonth + 1, 0, 23, 59, 59, 999);
+    const mm = String(prevMonth + 1).padStart(2, '0');
+    const lastDay = String(endDate.getDate()).padStart(2, '0');
+    return {
+      type: 'prev_2',
+      label: `2ª Quinzena de ${monthNames[prevMonth]}/${prevYear} (16/${mm} a ${lastDay}/${mm})`,
+      shortLabel: `2ª Quinzena (16/${mm} a ${lastDay}/${mm})`,
+      startDateStr: `16/${mm}/${prevYear}`,
+      endDateStr: `${lastDay}/${mm}/${prevYear}`,
+      startDate,
+      endDate
+    };
+  } else if (filterType === 'prev_1') {
+    const prevMonth = month === 0 ? 11 : month - 1;
+    const prevYear = month === 0 ? year - 1 : year;
+    const startDate = new Date(prevYear, prevMonth, 1, 0, 0, 0, 0);
+    const endDate = new Date(prevYear, prevMonth, 15, 23, 59, 59, 999);
+    const mm = String(prevMonth + 1).padStart(2, '0');
+    return {
+      type: 'prev_1',
+      label: `1ª Quinzena de ${monthNames[prevMonth]}/${prevYear} (01/${mm} a 15/${mm})`,
+      shortLabel: `1ª Quinzena (01/${mm} a 15/${mm})`,
+      startDateStr: `01/${mm}/${prevYear}`,
+      endDateStr: `15/${mm}/${prevYear}`,
+      startDate,
+      endDate
+    };
+  } else if (filterType === 'custom') {
+    const startInput = document.getElementById('quinzenaStartDate')?.value;
+    const endInput = document.getElementById('quinzenaEndDate')?.value;
+    let startDate = startInput ? new Date(`${startInput}T00:00:00`) : new Date(year, month, 1, 0, 0, 0);
+    let endDate = endInput ? new Date(`${endInput}T23:59:59`) : new Date(year, month + 1, 0, 23, 59, 59);
+    if (isNaN(startDate.getTime())) startDate = new Date(year, month, 1);
+    if (isNaN(endDate.getTime())) endDate = new Date(year, month + 1, 0, 23, 59, 59);
+
+    const d1 = startDate.toLocaleDateString('pt-BR');
+    const d2 = endDate.toLocaleDateString('pt-BR');
+    return {
+      type: 'custom',
+      label: `Período Personalizado (${d1} a ${d2})`,
+      shortLabel: `${d1} a ${d2}`,
+      startDateStr: d1,
+      endDateStr: d2,
+      startDate,
+      endDate
+    };
+  }
+
+  return getQuinzenaDateBounds('current_1');
+}
+
+function parseEventDateToObj(evt) {
+  if (evt.timestamp) {
+    const d = new Date(Number(evt.timestamp) * 1000);
+    if (!isNaN(d.getTime())) return d;
+  }
+  if (evt.data) {
+    const parts = evt.data.split('/');
+    if (parts.length === 3) {
+      const d = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10) - 1;
+      const y = parseInt(parts[2], 10);
+      let h = 12, min = 0, s = 0;
+      if (evt.hora) {
+        const hp = evt.hora.split(':');
+        if (hp.length >= 2) {
+          h = parseInt(hp[0], 10);
+          min = parseInt(hp[1], 10);
+          s = hp.length > 2 ? parseInt(hp[2], 10) : 0;
+        }
+      }
+      return new Date(y, m, d, h, min, s);
+    }
+  }
+  return null;
+}
+
+function computeQuinzenalData(bounds) {
+  const events = appState.events || [];
+  const startTs = bounds.startDate.getTime();
+  const endTs = bounds.endDate.getTime();
+  const splitPercent = appState.barberSplitPercent ?? 50;
+
+  let totalCash = 0;
+  let totalTokens = 0;
+  let pixTokens = 0;
+  let manualTokens = 0;
+  const dailyMap = {};
+  const matchingEvents = [];
+
+  events.forEach(evt => {
+    if (evt.tipo !== 'venda') return;
+    const evtDate = parseEventDateToObj(evt);
+    if (!evtDate) return;
+    const ts = evtDate.getTime();
+    if (ts >= startTs && ts <= endTs) {
+      matchingEvents.push(evt);
+      const val = Number(evt.valor) || 0;
+      const fichas = Number(evt.fichas) || 0;
+      totalCash += val;
+      totalTokens += fichas;
+
+      const isPix = (evt.origem && evt.origem.toLowerCase().includes('mercado')) || (evt.mp_id !== undefined);
+      if (isPix) {
+        pixTokens += fichas;
+      } else {
+        manualTokens += fichas;
+      }
+
+      const dStr = evt.data || evtDate.toLocaleDateString('pt-BR');
+      if (!dailyMap[dStr]) {
+        dailyMap[dStr] = {
+          data: dStr,
+          dateObj: evtDate,
+          valor: 0,
+          fichas: 0,
+          pixCount: 0,
+          manualCount: 0,
+          events: []
+        };
+      }
+      dailyMap[dStr].valor += val;
+      dailyMap[dStr].fichas += fichas;
+      if (isPix) dailyMap[dStr].pixCount++;
+      else dailyMap[dStr].manualCount++;
+      dailyMap[dStr].events.push(evt);
+    }
+  });
+
+  const dailyList = Object.values(dailyMap);
+  dailyList.sort((a, b) => b.dateObj.getTime() - a.dateObj.getTime());
+
+  const barberShare = (totalCash * splitPercent) / 100;
+  const ownerShare = totalCash - barberShare;
+  const activeDays = dailyList.length;
+  const dailyAverage = activeDays > 0 ? (totalCash / activeDays) : 0;
+
+  // Verifica se já está fechada no histórico
+  const closedQuinzenas = appState.closedQuinzenas || [];
+  const closedRecord = closedQuinzenas.find(q =>
+    (q.periodo_label === bounds.label) ||
+    (q.data_inicio === bounds.startDateStr && q.data_fim === bounds.endDateStr)
+  );
+
+  return {
+    bounds,
+    label: bounds.label,
+    shortLabel: bounds.shortLabel,
+    startDateStr: bounds.startDateStr,
+    endDateStr: bounds.endDateStr,
+    totalCash,
+    totalTokens,
+    pixTokens,
+    manualTokens,
+    splitPercent,
+    barberShare,
+    ownerShare,
+    activeDays,
+    dailyAverage,
+    dailyList,
+    matchingEvents,
+    isClosed: !!closedRecord,
+    closedRecord
+  };
+}
+
+function updateQuinzenaPillDates() {
+  const b1 = getQuinzenaDateBounds('current_1');
+  const b2 = getQuinzenaDateBounds('current_2');
+  const bp2 = getQuinzenaDateBounds('prev_2');
+  const bp1 = getQuinzenaDateBounds('prev_1');
+
+  setText('pillCurrent1Dates', `${b1.startDateStr.slice(0, 5)} a ${b1.endDateStr.slice(0, 5)}`);
+  setText('pillCurrent2Dates', `${b2.startDateStr.slice(0, 5)} a ${b2.endDateStr.slice(0, 5)}`);
+  setText('pillPrev2Dates', `${bp2.startDateStr.slice(0, 5)} a ${bp2.endDateStr.slice(0, 5)}`);
+  setText('pillPrev1Dates', `${bp1.startDateStr.slice(0, 5)} a ${bp1.endDateStr.slice(0, 5)}`);
+}
+
+function renderQuinzenalSection() {
+  updateQuinzenaPillDates();
+
+  const filterType = appState.quinzenalFilter || 'current_1';
+  const bounds = getQuinzenaDateBounds(filterType);
+  const data = computeQuinzenalData(bounds);
+  currentQuinzenaData = data;
+
+  // Atualiza Badge de Status
+  const badge = document.getElementById('quinzenaStatusBadge');
+  if (badge) {
+    if (data.isClosed) {
+      badge.className = 'quinzenal-status-badge status-closed';
+      badge.innerHTML = `✅ ${escapeHtml(data.shortLabel)} • FECHADA & AUDITADA`;
+    } else {
+      badge.className = 'quinzenal-status-badge status-open';
+      badge.innerHTML = `⏳ ${escapeHtml(data.shortLabel)} • EM ABERTO`;
+    }
+  }
+
+  // Atualiza Cards Métricos
+  setText('qTotalCash', `R$ ${formatCurrency(data.totalCash)}`);
+  setText('qTotalTokens', data.totalTokens);
+  setText('qPixTokens', data.pixTokens);
+  setText('qManualTokens', data.manualTokens);
+
+  setText('qBarberPercent', data.splitPercent);
+  setText('qBarberShare', `R$ ${formatCurrency(data.barberShare)}`);
+  setText('tableQuinzenaBarberPercent', data.splitPercent);
+
+  setText('qOwnerPercent', 100 - data.splitPercent);
+  setText('qOwnerShare', `R$ ${formatCurrency(data.ownerShare)}`);
+
+  setText('qDailyAverage', `R$ ${formatCurrency(data.dailyAverage)}/dia`);
+  setText('qActiveDaysCount', data.activeDays);
+
+  setText('qPeriodRangeLabel', `${data.startDateStr} a ${data.endDateStr}`);
+  setText('qDaysCounter', `${data.dailyList.length} ${data.dailyList.length === 1 ? 'dia com venda' : 'dias com vendas'}`);
+
+  // Renderiza Tabela Dia a Dia
+  const dailyTbody = document.getElementById('quinzenalDailyTableBody');
+  if (dailyTbody) {
+    if (data.dailyList.length === 0) {
+      dailyTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">Nenhuma venda registrada nesta quinzena.</td></tr>`;
+    } else {
+      dailyTbody.innerHTML = data.dailyList.map(day => {
+        const bVal = (day.valor * data.splitPercent) / 100;
+        const oVal = day.valor - bVal;
+        const methods = [];
+        if (day.pixCount > 0) methods.push(`<span class="tag-pix" style="background:rgba(0,229,255,0.15); border:1px solid #00e5ff; color:#00e5ff; padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:600;">Pix (${day.pixCount})</span>`);
+        if (day.manualCount > 0) methods.push(`<span class="tag-moeda" style="background:rgba(255,209,102,0.15); border:1px solid var(--coin-gold); color:var(--coin-gold); padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:600;">Moeda (${day.manualCount})</span>`);
+
+        return `
+          <tr>
+            <td class="log-time font-mono" style="font-weight:700; color:#f1f5f9;">
+              📅 ${escapeHtml(day.data)}
+            </td>
+            <td class="log-value" style="color:#22c55e; font-weight:bold; font-family:'Rajdhani',sans-serif; font-size:1.15rem;">
+              R$ ${formatCurrency(day.valor)}
+            </td>
+            <td class="log-tokens font-mono" style="color:#38bdf8; font-weight:600;">
+              ${day.fichas} un
+            </td>
+            <td class="log-barber text-yellow font-digital" style="font-weight:bold; font-size:1.05rem;">
+              R$ ${formatCurrency(bVal)}
+            </td>
+            <td class="log-owner text-green font-digital" style="font-weight:bold; font-size:1.05rem;">
+              R$ ${formatCurrency(oVal)}
+            </td>
+            <td>
+              <div style="display:flex; gap:0.35rem; flex-wrap:wrap;">
+                ${methods.join('')}
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+  }
+
+  // Renderiza Histórico de Quinzenas Fechadas
+  renderClosedQuinzenasTable();
+}
+
+function renderClosedQuinzenasTable() {
+  const tbody = document.getElementById('closedQuinzenasTableBody');
+  const badge = document.getElementById('closedQuinzenasCounterBadge');
+  if (!tbody) return;
+
+  const quinzenas = appState.closedQuinzenas || [];
+  if (badge) {
+    badge.textContent = `${quinzenas.length} ${quinzenas.length === 1 ? 'quinzena fechada' : 'quinzenas fechadas'}`;
+  }
+
+  if (quinzenas.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="text-center text-muted py-4">Nenhuma quinzena foi arquivada anteriormente.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = quinzenas.slice().reverse().map(q => {
+    const barberVal = q.barber_share !== undefined ? q.barber_share : ((q.valor_total * (q.split_percent || 50)) / 100);
+    const ownerVal = q.owner_share !== undefined ? q.owner_share : (q.valor_total - barberVal);
+
+    return `
+      <tr>
+        <td>
+          <strong style="color:#00d2ff;">${escapeHtml(q.periodo_label || 'Quinzena')}</strong>
+          <br><small class="text-muted">${escapeHtml(q.data_inicio || '')} a ${escapeHtml(q.data_fim || '')}</small>
+        </td>
+        <td class="log-time">
+          <strong>${escapeHtml(q.data_fechamento || '')}</strong>
+          <small class="text-muted">${escapeHtml(q.hora_fechamento || '')}</small>
+        </td>
+        <td class="log-value" style="color:#22c55e; font-weight:bold; font-family:'Rajdhani',sans-serif; font-size:1.15rem;">
+          R$ ${formatCurrency(q.valor_total)}
+        </td>
+        <td class="log-tokens font-mono" style="color:#38bdf8; font-weight:600;">
+          ${q.fichas || 0} un
+        </td>
+        <td class="log-barber text-yellow font-digital" style="font-weight:bold; font-size:1.05rem;">
+          R$ ${formatCurrency(barberVal)}
+        </td>
+        <td class="log-owner text-green font-digital" style="font-weight:bold; font-size:1.05rem;">
+          R$ ${formatCurrency(ownerVal)}
+        </td>
+        <td>
+          <div style="font-weight:600; color:#f1f5f9;">${escapeHtml(q.responsavel || 'Daniel')}</div>
+          ${q.observacao ? `<small class="text-muted" style="font-size:0.75rem;">Obs: ${escapeHtml(q.observacao)}</small>` : ''}
+        </td>
+        <td>
+          <button class="btn-micro btn-pdf-mini" onclick="downloadClosedQuinzenaPdf(${q.id})" title="Baixar comprovante PDF desta quinzena" style="cursor:pointer; background:rgba(0,229,255,0.15); border:1px solid #00e5ff; color:#00e5ff; padding:4px 8px; border-radius:4px; font-weight:600; font-size:0.78rem;">
+            📄 Recibo PDF
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function downloadClosedQuinzenaPdf(qId) {
+  const q = (appState.closedQuinzenas || []).find(item => item.id === qId);
+  if (!q) {
+    alert('Fechamento quinzenal não encontrado.');
+    return;
+  }
+
+  const splitPercent = q.split_percent || appState.barberSplitPercent || 50;
+  const barberVal = q.barber_share !== undefined ? q.barber_share : ((q.valor_total * splitPercent) / 100);
+  const ownerVal = q.owner_share !== undefined ? q.owner_share : (q.valor_total - barberVal);
+
+  let matchingEvents = [];
+  if (q.data_inicio && q.data_fim) {
+    const parts1 = q.data_inicio.split('/');
+    const parts2 = q.data_fim.split('/');
+    if (parts1.length === 3 && parts2.length === 3) {
+      const d1 = new Date(parseInt(parts1[2]), parseInt(parts1[1]) - 1, parseInt(parts1[0]), 0, 0, 0);
+      const d2 = new Date(parseInt(parts2[2]), parseInt(parts2[1]) - 1, parseInt(parts2[0]), 23, 59, 59);
+      matchingEvents = (appState.events || []).filter(e => {
+        if (e.tipo !== 'venda') return false;
+        const ed = parseEventDateToObj(e);
+        return ed && ed.getTime() >= d1.getTime() && ed.getTime() <= d2.getTime();
+      });
+    }
+  }
+
+  generateQuinzenalPdfReceipt({
+    label: q.periodo_label || 'Fechamento Quinzenal',
+    startDateStr: q.data_inicio || '',
+    endDateStr: q.data_fim || '',
+    totalCash: q.valor_total,
+    totalTokens: q.fichas,
+    splitPercent: splitPercent,
+    barberShare: barberVal,
+    ownerShare: ownerVal,
+    responsavel: q.responsavel || 'Daniel',
+    observacao: q.observacao || '',
+    dataFechamento: `${q.data_fechamento} às ${q.hora_fechamento}`,
+    matchingEvents: matchingEvents,
+    dailyList: []
+  });
+}
+window.downloadClosedQuinzenaPdf = downloadClosedQuinzenaPdf;
+
+// GERAÇÃO OFICIAL DO COMPROVANTE QUINZENAL EM PDF (COM ASSINATURAS MÚTUAS)
+function generateQuinzenalPdfReceipt(data) {
+  const jsPDFConstructor = window.jspdf?.jsPDF;
+  if (!jsPDFConstructor) {
+    alert(`Fechamento Quinzenal:\n\nPeríodo: ${data.label}\nTotal: R$ ${formatCurrency(data.totalCash)}\nRepasse Barbearia: R$ ${formatCurrency(data.barberShare)}\nLucro DG Tech Arcade: R$ ${formatCurrency(data.ownerShare)}`);
+    return;
+  }
+
+  const doc = new jsPDFConstructor({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  // Cabeçalho Oficial Escuro & Azul Neon
+  doc.setFillColor(15, 23, 42);
+  doc.rect(0, 0, pageWidth, 30, 'F');
+  doc.setFillColor(0, 210, 255);
+  doc.rect(0, 30, pageWidth, 2.5, 'F');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.setTextColor(255, 255, 255);
+  doc.text('DG TECH ARCADE', 14, 13);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(203, 213, 225);
+  doc.text('DEMONSTRATIVO QUINZENAL DE PRESTAÇÃO DE CONTAS & REPASSE', 14, 19);
+  doc.text('Parceria Comercial: Fliperama Arcade & Barbearia', 14, 25);
+
+  const emissaoStr = data.dataFechamento || `${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}`;
+  doc.setFontSize(8);
+  doc.setTextColor(255, 255, 255);
+  doc.text(`Emissão: ${emissaoStr}`, pageWidth - 14, 14, { align: 'right' });
+  doc.text(`Responsável: ${data.responsavel || 'Daniel'}`, pageWidth - 14, 20, { align: 'right' });
+  doc.text(`Período: ${data.startDateStr} até ${data.endDateStr}`, pageWidth - 14, 26, { align: 'right' });
+
+  // Quadro de Resumo Financeiro
+  const y = 39;
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(14, y, pageWidth - 28, 42, 3, 3, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(15, 23, 42);
+  doc.text(`APURAÇÃO CONSOLIDADA: ${data.label.toUpperCase()}`, 20, y + 8);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(71, 85, 105);
+  doc.text('Faturamento Bruto Arrecadado:', 20, y + 17);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(22, 101, 52);
+  doc.text(`R$ ${formatCurrency(data.totalCash)}`, 78, y + 17);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(71, 85, 105);
+  doc.text('Volume de Fichas na Quinzena:', 20, y + 25);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(15, 23, 42);
+  doc.text(`${data.totalTokens} fichas`, 78, y + 25);
+
+  // Divisão Pactuada
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(71, 85, 105);
+  doc.text(`Repasse Barbearia (${data.splitPercent}%):`, 110, y + 17);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(180, 83, 9);
+  doc.text(`R$ ${formatCurrency(data.barberShare)}`, pageWidth - 20, y + 17, { align: 'right' });
+
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(71, 85, 105);
+  doc.text(`Lucro Líquido DG Tech (${100 - data.splitPercent}%):`, 110, y + 25);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(29, 78, 216);
+  doc.text(`R$ ${formatCurrency(data.ownerShare)}`, pageWidth - 20, y + 25, { align: 'right' });
+
+  if (data.observacao) {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(8.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Observações: ${data.observacao}`, 20, y + 35);
+  }
+
+  // Tabela com Vendas ou Detalhamento Diário
+  let tableHead = [];
+  let tableData = [];
+
+  if (data.dailyList && data.dailyList.length > 0) {
+    tableHead = [['DATA', 'TOTAL DIA', 'FICHAS', 'REPASSE BARBEARIA', 'LUCRO ARCADE', 'MEIO DE PAGAMENTO']];
+    tableData = data.dailyList.map(d => {
+      const bV = (d.valor * data.splitPercent) / 100;
+      const oV = d.valor - bV;
+      const methods = [];
+      if (d.pixCount > 0) methods.push(`Pix Nuvem (${d.pixCount})`);
+      if (d.manualCount > 0) methods.push(`Moeda (${d.manualCount})`);
+      return [
+        d.data,
+        `R$ ${formatCurrency(d.valor)}`,
+        `${d.fichas} un`,
+        `R$ ${formatCurrency(bV)}`,
+        `R$ ${formatCurrency(oV)}`,
+        methods.join(', ') || 'Venda Balcão'
+      ];
+    });
+  } else if (data.matchingEvents && data.matchingEvents.length > 0) {
+    tableHead = [['DATA', 'HORA', 'VALOR', 'FICHAS', 'TIPO', 'DISCRIMINAÇÃO']];
+    tableData = data.matchingEvents.map(e => [
+      e.data || '--',
+      e.hora || '--',
+      `R$ ${formatCurrency(e.valor)}`,
+      `${e.fichas || 1} un`,
+      formatEventTypeLabel(e),
+      e.descricao || 'Venda Fliperama'
+    ]);
+  }
+
+  if (tableData.length > 0) {
+    doc.autoTable({
+      head: tableHead,
+      body: tableData,
+      startY: y + 48,
+      margin: { left: 14, right: 14, bottom: 44 },
+      styles: { font: 'helvetica', fontSize: 8, cellPadding: 2.2 },
+      headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: 24, halign: 'center' },
+        1: { cellWidth: 26, halign: 'right', fontStyle: 'bold' },
+        2: { cellWidth: 18, halign: 'center' },
+        3: { cellWidth: 32, halign: 'right' },
+        4: { cellWidth: 30, halign: 'right' },
+        5: { cellWidth: 'auto' }
+      }
+    });
+  }
+
+  // Declaração de Acerto e Linhas de Assinatura
+  const finalY = doc.lastAutoTable ? Math.max(doc.lastAutoTable.finalY + 16, pageHeight - 34) : pageHeight - 34;
+
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text('Declaramos que os valores acima correspondem com fidelidade à apuração quinzenal das fichas movimentadas, dando-se plena quitação mútua.', pageWidth / 2, finalY - 4, { align: 'center' });
+
+  doc.setDrawColor(148, 163, 184);
+  doc.line(20, finalY + 10, 85, finalY + 10);
+  doc.line(pageWidth - 85, finalY + 10, pageWidth - 20, finalY + 10);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(71, 85, 105);
+  doc.text(`${data.responsavel || 'Daniel'} (DG Tech Arcade)`, 52.5, finalY + 14.5, { align: 'center' });
+  doc.text('Responsável Barbearia (Ponto Comercial)', pageWidth - 52.5, finalY + 14.5, { align: 'center' });
+
+  const fileName = `Fechamento_Quinzenal_${data.startDateStr.replace(/\//g, '-')}_a_${data.endDateStr.replace(/\//g, '-')}.pdf`;
+  doc.save(fileName);
+  showToast('📄 Comprovante Quinzenal baixado em PDF!');
+  appendHardwareFeed(`[PDF] Demonstrativo quinzenal '${fileName}' gerado com sucesso.`);
+}
+
+// COPIAR RESUMO FORMATADO PARA WHATSAPP
+function copyQuinzenalWhatsAppSummary(data) {
+  if (!data) return;
+
+  const msg = [
+    `💈 *DG TECH ARCADE — FECHAMENTO QUINZENAL* 🕹️`,
+    `📅 *Período:* ${data.label}`,
+    `--------------------------------------------`,
+    `💰 *Faturamento Bruto:* R$ ${formatCurrency(data.totalCash)}`,
+    `🎟️ *Fichas Vendidas:* ${data.totalTokens} un (${data.pixTokens} Pix • ${data.manualTokens} Moeda)`,
+    `📅 *Dias com Movimento:* ${data.activeDays} dias`,
+    `📈 *Média Diária:* R$ ${formatCurrency(data.dailyAverage)}/dia`,
+    `--------------------------------------------`,
+    `💈 *Repasse Barbearia (${data.splitPercent}%):* R$ ${formatCurrency(data.barberShare)}`,
+    `🕹️ *Lucro Proprietário (${100 - data.splitPercent}%):* R$ ${formatCurrency(data.ownerShare)}`,
+    `--------------------------------------------`,
+    `✅ *Status:* Prestação de contas apurada pelo sistema DG Tech Arcade.`,
+    `Obrigado pela parceria! 🤝`
+  ].join('\n');
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(msg).then(() => {
+      showToast('💬 Resumo copiado! Cole no WhatsApp da Barbearia.');
+    }).catch(() => {
+      fallbackCopyText(msg);
+    });
+  } else {
+    fallbackCopyText(msg);
+  }
+}
+
+function fallbackCopyText(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    showToast('💬 Resumo copiado! Cole no WhatsApp da Barbearia.');
+  } catch (e) {
+    prompt('Copie o texto para o WhatsApp abaixo:', text);
+  }
+  document.body.removeChild(ta);
+}
+
+// EXPORTAR PLANILHA CSV DA QUINZENA
+function exportQuinzenalCsv(data) {
+  if (!data) return;
+  const events = data.matchingEvents || [];
+  if (events.length === 0) {
+    alert('Nenhuma transação para exportar nesta quinzena.');
+    return;
+  }
+
+  const headers = ['ID', 'Data', 'Hora', 'Tipo', 'Fichas', 'Valor_Bruto_RS', 'Repasse_Barbearia_RS', 'Lucro_Proprietario_RS', 'Cliente_Banco', 'Origem', 'Descricao'];
+  const rows = events.map(e => {
+    const val = Number(e.valor) || 0;
+    const bVal = (val * data.splitPercent) / 100;
+    const oVal = val - bVal;
+    return [
+      e.id,
+      e.data || '--',
+      e.hora || '--',
+      e.tipo || 'venda',
+      e.fichas || 0,
+      formatCurrency(val),
+      formatCurrency(bVal),
+      formatCurrency(oVal),
+      `"${(e.cliente || e.banco || '').replace(/"/g, '""')}"`,
+      `"${(e.origem || '').replace(/"/g, '""')}"`,
+      `"${(e.descricao || '').replace(/"/g, '""')}"`
+    ].join(';');
+  });
+
+  const csvContent = '\uFEFF' + [headers.join(';'), ...rows].join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `Fechamento_Quinzenal_${data.startDateStr.replace(/\//g, '-')}_a_${data.endDateStr.replace(/\//g, '-')}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  showToast('📊 Planilha CSV da quinzena baixada!');
+}
+
+function openQuinzenalModal() {
+  if (!currentQuinzenaData) {
+    const bounds = getQuinzenaDateBounds(appState.quinzenalFilter || 'current_1');
+    currentQuinzenaData = computeQuinzenalData(bounds);
+  }
+
+  setText('modalQPeriodLabel', currentQuinzenaData.label);
+  setText('modalQGrossTotal', `R$ ${formatCurrency(currentQuinzenaData.totalCash)}`);
+  setText('modalQTokensTotal', `${currentQuinzenaData.totalTokens} fichas`);
+  setText('modalQBarberPercent', currentQuinzenaData.splitPercent);
+  setText('modalQBarberAmount', `R$ ${formatCurrency(currentQuinzenaData.barberShare)}`);
+  setText('modalQOwnerPercent', 100 - currentQuinzenaData.splitPercent);
+  setText('modalQOwnerAmount', `R$ ${formatCurrency(currentQuinzenaData.ownerShare)}`);
+
+  const respInput = document.getElementById('modalQResponsavel');
+  if (respInput) respInput.value = 'Daniel';
+
+  const obsInput = document.getElementById('modalQObservacao');
+  if (obsInput) obsInput.value = `Fechamento ${currentQuinzenaData.shortLabel} — Barbearia`;
+
+  const sangriaCb = document.getElementById('modalQEfetuarSangriaCheckbox');
+  if (sangriaCb) {
+    sangriaCb.checked = appState.sessionCash > 0;
+  }
+
+  openModal('quinzenalModal');
+}
+
+async function confirmQuinzenalClosing() {
+  if (!currentQuinzenaData) return;
+
+  const responsavel = (document.getElementById('modalQResponsavel')?.value || 'Daniel').trim();
+  const observacao = (document.getElementById('modalQObservacao')?.value || '').trim();
+  const efetuarSangria = document.getElementById('modalQEfetuarSangriaCheckbox')?.checked ?? false;
+  const shouldGenPdf = document.getElementById('modalQGeneratePdfCheckbox')?.checked ?? true;
+
+  closeModal('quinzenalModal');
+
+  try {
+    const resp = await fetch(`${getApiBase()}/api/quinzenal/fechar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        periodo_label: currentQuinzenaData.label,
+        data_inicio: currentQuinzenaData.startDateStr,
+        data_fim: currentQuinzenaData.endDateStr,
+        valor_total: currentQuinzenaData.totalCash,
+        fichas: currentQuinzenaData.totalTokens,
+        split_percent: currentQuinzenaData.splitPercent,
+        barber_share: currentQuinzenaData.barberShare,
+        owner_share: currentQuinzenaData.ownerShare,
+        responsavel: responsavel,
+        observacao: observacao,
+        efetuar_sangria: efetuarSangria
+      })
+    });
+
+    if (!resp.ok) throw new Error('Erro na resposta do servidor');
+    const res = await resp.json();
+
+    if (res.success) {
+      if (res.closed_quinzenas) {
+        appState.closedQuinzenas = res.closed_quinzenas;
+      } else if (res.quinzena) {
+        appState.closedQuinzenas.push(res.quinzena);
+      }
+
+      if (res.session_cash !== undefined) {
+        appState.sessionCash = res.session_cash;
+        appState.sessionTokens = res.session_tokens;
+      }
+
+      saveLocalState();
+      renderAllData();
+      showToast('✅ Fechamento Quinzenal registrado e auditado com sucesso!');
+
+      if (shouldGenPdf) {
+        generateQuinzenalPdfReceipt({
+          ...currentQuinzenaData,
+          responsavel: responsavel,
+          observacao: observacao,
+          dataFechamento: `${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}`
+        });
+      }
+    } else {
+      throw new Error(res.error || 'Falha ao processar fechamento');
+    }
+  } catch (err) {
+    console.error('[QUINZENAL CLOSING ERRO]', err);
+    // Fallback local se backend não responder
+    const newReg = {
+      id: (appState.closedQuinzenas || []).length + 1,
+      periodo_label: currentQuinzenaData.label,
+      data_inicio: currentQuinzenaData.startDateStr,
+      data_fim: currentQuinzenaData.endDateStr,
+      data_fechamento: new Date().toLocaleDateString('pt-BR'),
+      hora_fechamento: new Date().toLocaleTimeString('pt-BR'),
+      valor_total: currentQuinzenaData.totalCash,
+      fichas: currentQuinzenaData.totalTokens,
+      split_percent: currentQuinzenaData.splitPercent,
+      barber_share: currentQuinzenaData.barberShare,
+      owner_share: currentQuinzenaData.ownerShare,
+      responsavel: responsavel,
+      observacao: observacao,
+      status: 'Fechada / Auditada'
+    };
+    appState.closedQuinzenas.push(newReg);
+    saveLocalState();
+    renderAllData();
+    showToast('✅ Fechamento salvo localmente no painel!');
+
+    if (shouldGenPdf) {
+      generateQuinzenalPdfReceipt({
+        ...currentQuinzenaData,
+        responsavel: responsavel,
+        observacao: observacao,
+        dataFechamento: `${newReg.data_fechamento} às ${newReg.hora_fechamento}`
+      });
+    }
+  }
+}
 
 // Identificar / Renomear Cliente de uma Venda
 async function promptEditClientName(eventId) {
@@ -1816,6 +2611,54 @@ function initEventListeners() {
     const shouldGenPdf = document.getElementById('sangriaGeneratePdfCheckbox')?.checked ?? true;
     closeModal('sangriaModal');
     await executeSangria(resp, obs, shouldGenPdf);
+  });
+
+  // 6.1. Fechamento Quinzenal (15 Dias)
+  document.getElementById('btnScrollToQuinzenal')?.addEventListener('click', () => {
+    document.getElementById('quinzenalSection')?.scrollIntoView({ behavior: 'smooth' });
+  });
+
+  const qPills = document.querySelectorAll('.quinzenal-pill');
+  qPills.forEach(pill => {
+    pill.addEventListener('click', () => {
+      qPills.forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      const qKey = pill.getAttribute('data-quinzena') || 'current_1';
+      appState.quinzenalFilter = qKey;
+      const customBar = document.getElementById('quinzenalCustomDatesBar');
+      if (customBar) {
+        customBar.style.display = qKey === 'custom' ? 'flex' : 'none';
+      }
+      renderQuinzenalSection();
+      playBlipSound();
+    });
+  });
+
+  document.getElementById('btnApplyCustomDates')?.addEventListener('click', () => {
+    renderQuinzenalSection();
+    showToast('📅 Período personalizado filtrado.');
+  });
+
+  document.getElementById('btnOpenQuinzenalModal')?.addEventListener('click', openQuinzenalModal);
+  document.getElementById('btnCancelQuinzenalModal')?.addEventListener('click', () => closeModal('quinzenalModal'));
+  document.getElementById('btnConfirmQuinzenalClosing')?.addEventListener('click', confirmQuinzenalClosing);
+
+  document.getElementById('btnDownloadQuinzenalPdf')?.addEventListener('click', () => {
+    if (currentQuinzenaData) {
+      generateQuinzenalPdfReceipt(currentQuinzenaData);
+    }
+  });
+
+  document.getElementById('btnCopyQuinzenalWhatsApp')?.addEventListener('click', () => {
+    if (currentQuinzenaData) {
+      copyQuinzenalWhatsAppSummary(currentQuinzenaData);
+    }
+  });
+
+  document.getElementById('btnExportQuinzenalCsv')?.addEventListener('click', () => {
+    if (currentQuinzenaData) {
+      exportQuinzenalCsv(currentQuinzenaData);
+    }
   });
 
   // 7. Modal de Registro Manual

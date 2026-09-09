@@ -7,7 +7,7 @@
   "general_tokens": 90,
   "general_cash": 203.5,
   "price_per_token": 2.5,
-  "barber_split_percent": 50,
+  "barber_split_percent": 30,
   "security_pin": "1234",
   "require_pin": false,
   "mp_access_token": "APP_USR-5529824471056733-082916-765dca4d1caf210308a55984c4d48abe-1291350873",
@@ -56,7 +56,7 @@
     "176872122827",
     "177925181646"
   ],
-  "last_mp_sync": "21:14:42",
+  "last_mp_sync": "23:08:15",
   "last_mp_status": "Online (43 processados)",
   "events": [
     {
@@ -817,17 +817,6 @@
       "mp_id": "177925181646"
     }
   ],
-  "today_cash": 10.0,
-  "today_tokens": 4,
-  "yesterday_cash": 92.5,
-  "yesterday_tokens": 37,
-  "last_sangria": {
-    "data": "07/09/2026",
-    "hora": "21:30:00",
-    "valor": 188.5,
-    "fichas": 76,
-    "responsavel": "Daniel"
-  },
   "closed_registers": [
     {
       "id": 1,
@@ -857,5 +846,67 @@
       "lucro_proprietario": 94.25,
       "split_percent": 50
     }
-  ]
+  ],
+  "closed_quinzenas": [
+    {
+      "id": 1,
+      "periodo_label": "1ª Quinzena de Setembro/2026 (01/09 a 15/09)",
+      "data_inicio": "01/09/2026",
+      "data_fim": "15/09/2026",
+      "data_fechamento": "08/09/2026",
+      "hora_fechamento": "23:05:48",
+      "timestamp": 1788919548.350594,
+      "valor_total": 198.5,
+      "fichas": 80,
+      "split_percent": 50,
+      "barber_share": 99.25,
+      "owner_share": 99.25,
+      "responsavel": "Daniel",
+      "observacao": "Fechamento Quinzenal Oficial",
+      "status": "Fechada / Auditada"
+    }
+  ],
+  "daily_sales": [
+    {
+      "data": "08/09/2026",
+      "valor": 10.0,
+      "fichas": 4,
+      "count": 1
+    },
+    {
+      "data": "07/09/2026",
+      "valor": 92.5,
+      "fichas": 37,
+      "count": 22
+    },
+    {
+      "data": "06/09/2026",
+      "valor": 90.0,
+      "fichas": 36,
+      "count": 20
+    },
+    {
+      "data": "05/09/2026",
+      "valor": 5.0,
+      "fichas": 2,
+      "count": 2
+    },
+    {
+      "data": "29/08/2026",
+      "valor": 6.0,
+      "fichas": 3,
+      "count": 2
+    }
+  ],
+  "today_cash": 10.0,
+  "today_tokens": 4,
+  "yesterday_cash": 92.5,
+  "yesterday_tokens": 37,
+  "last_sangria": {
+    "data": "07/09/2026",
+    "hora": "21:30:00",
+    "valor": 188.5,
+    "fichas": 76,
+    "responsavel": "Daniel"
+  }
 }

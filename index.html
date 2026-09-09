@@ -12,7 +12,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
   
   <!-- Estilos Customizados -->
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2.7.0">
 </head>
 <body class="arcade-theme">
   <!-- Efeitos de Scanline e Ambient Glow Retrô -->
@@ -388,10 +388,225 @@
                 <small>Baixar planilha com todas as transações</small>
               </div>
             </button>
+            <button class="btn-large-action btn-quinzenal-glow" id="btnScrollToQuinzenal" style="grid-column: 1 / -1; border-color: rgba(0, 210, 255, 0.4); background: linear-gradient(135deg, rgba(0, 210, 255, 0.12), rgba(255, 30, 66, 0.08));">
+              <span class="action-icon">🗓️</span>
+              <div class="action-texts">
+                <strong style="color: #00d2ff;">Área de Fechamento Quinzenal (15 Dias)</strong>
+                <small>Apuração da quinzena atual, divisão da Barbearia (50/50), recibo PDF e WhatsApp</small>
+              </div>
+            </button>
           </div>
         </div>
       </section>
     </div>
+
+    <!-- 4. CENTRAL DE FECHAMENTO DE CAIXA QUINZENAL (15 DIAS) & PRESTAÇÃO DE CONTAS -->
+    <section class="panel-card quinzenal-panel" id="quinzenalSection" style="margin-bottom: 1.5rem;">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="panel-icon">🗓️</span>
+          <div>
+            <h3 class="panel-title">CENTRAL DE FECHAMENTO QUINZENAL (15 DIAS)</h3>
+            <p class="panel-sub">Apuração de faturamento e divisão de lucros por quinzena com a Barbearia</p>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <span id="quinzenaStatusBadge" class="quinzena-status-badge status-open">1ª QUINZENA (01 a 15) • EM ABERTO</span>
+        </div>
+      </div>
+
+      <!-- Barra Seletora de Quinzena -->
+      <div class="quinzenal-control-bar">
+        <div class="quinzenal-selector-group">
+          <span class="selector-title-mini">SELECIONAR QUINZENA:</span>
+          <div class="quinzenal-pills-row" id="quinzenalPillsContainer">
+            <button class="quinzenal-pill active" data-quinzena="current_1" id="pillQuinzenaCurrent1">
+              <span class="pill-label">📍 1ª Quinzena Atual</span>
+              <small class="pill-dates" id="pillCurrent1Dates">01/09 a 15/09</small>
+            </button>
+            <button class="quinzenal-pill" data-quinzena="current_2" id="pillQuinzenaCurrent2">
+              <span class="pill-label">⏭️ 2ª Quinzena Atual</span>
+              <small class="pill-dates" id="pillCurrent2Dates">16/09 a 30/09</small>
+            </button>
+            <button class="quinzenal-pill" data-quinzena="prev_2" id="pillQuinzenaPrev2">
+              <span class="pill-label">⏮️ 2ª Quinzena Anterior</span>
+              <small class="pill-dates" id="pillPrev2Dates">16/08 a 31/08</small>
+            </button>
+            <button class="quinzenal-pill" data-quinzena="prev_1" id="pillQuinzenaPrev1">
+              <span class="pill-label">⏮️ 1ª Quinzena Anterior</span>
+              <small class="pill-dates" id="pillPrev1Dates">01/08 a 15/08</small>
+            </button>
+            <button class="quinzenal-pill" data-quinzena="custom" id="pillQuinzenaCustom">
+              <span class="pill-label">⚙️ Personalizado</span>
+              <small class="pill-dates">Filtrar período</small>
+            </button>
+          </div>
+        </div>
+
+        <!-- Seletor de Datas Personalizadas -->
+        <div class="quinzenal-custom-dates-bar" id="quinzenalCustomDatesBar" style="display: none;">
+          <div class="custom-date-item">
+            <label for="quinzenaStartDate">Data Início:</label>
+            <input type="date" id="quinzenaStartDate" class="arcade-input-compact">
+          </div>
+          <div class="custom-date-item">
+            <label for="quinzenaEndDate">Data Fim:</label>
+            <input type="date" id="quinzenaEndDate" class="arcade-input-compact">
+          </div>
+          <button class="btn-secondary btn-compact" id="btnApplyCustomDates">Filtrar</button>
+        </div>
+      </div>
+
+      <!-- Cards Métricos de Apuração da Quinzena Selecionada -->
+      <div class="quinzenal-metrics-grid">
+        <!-- Card 1: Faturamento Bruto da Quinzena -->
+        <div class="q-metric-card q-card-gross">
+          <div class="q-card-header">
+            <span class="q-card-tag">FATURAMENTO QUINZENAL</span>
+            <span class="q-card-icon">💰</span>
+          </div>
+          <div class="q-card-body">
+            <span class="q-metric-label">TOTAL BRUTO ARRECADADO</span>
+            <div class="q-metric-val font-digital" id="qTotalCash">R$ 0,00</div>
+            <div class="q-metric-sub">
+              <span id="qTotalTokens">0</span> fichas (<span id="qPixTokens">0</span> Pix • <span id="qManualTokens">0</span> Moeda)
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: Repasse Barbearia -->
+        <div class="q-metric-card q-card-barber">
+          <div class="q-card-header">
+            <span class="q-card-tag">PONTO COMERCIAL</span>
+            <span class="q-card-icon">💈</span>
+          </div>
+          <div class="q-card-body">
+            <span class="q-metric-label">REPASSE BARBEARIA (<span id="qBarberPercent">50</span>%)</span>
+            <div class="q-metric-val font-digital text-yellow" id="qBarberShare">R$ 0,00</div>
+            <div class="q-metric-sub">
+              Valor líquido a pagar ao dono da barbearia
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 3: Seu Lucro Líquido -->
+        <div class="q-metric-card q-card-owner">
+          <div class="q-card-header">
+            <span class="q-card-tag">LUCRO DO PROPRIETÁRIO</span>
+            <span class="q-card-icon">🕹️</span>
+          </div>
+          <div class="q-card-body">
+            <span class="q-metric-label">SEU LUCRO LÍQUIDO (<span id="qOwnerPercent">50</span>%)</span>
+            <div class="q-metric-val font-digital text-green" id="qOwnerShare">R$ 0,00</div>
+            <div class="q-metric-sub">
+              Lucro livre após repasse do ponto
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 4: Desempenho da Quinzena -->
+        <div class="q-metric-card q-card-perf">
+          <div class="q-card-header">
+            <span class="q-card-tag">DESEMPENHO DO PERÍODO</span>
+            <span class="q-card-icon">📈</span>
+          </div>
+          <div class="q-card-body">
+            <span class="q-metric-label">MÉDIA DIÁRIA & ATIVIDADE</span>
+            <div class="q-metric-val font-digital text-blue" id="qDailyAverage">R$ 0,00/dia</div>
+            <div class="q-metric-sub">
+              <span id="qActiveDaysCount">0</span> dias com vendas registradas
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Ações Rápidas da Quinzena -->
+      <div class="quinzenal-actions-row">
+        <button class="btn-q-action btn-q-close" id="btnOpenQuinzenalModal">
+          <span class="btn-icon-q">🔒</span>
+          <div class="btn-text-q">
+            <strong>Realizar Fechamento Desta Quinzena</strong>
+            <small>Oficializar acerto, arquivar e registrar auditoria</small>
+          </div>
+        </button>
+
+        <button class="btn-q-action btn-q-pdf" id="btnDownloadQuinzenalPdf">
+          <span class="btn-icon-q">📄</span>
+          <div class="btn-text-q">
+            <strong>Baixar Comprovante em PDF</strong>
+            <small>Demonstrativo com campos de assinatura mútua</small>
+          </div>
+        </button>
+
+        <button class="btn-q-action btn-q-whatsapp" id="btnCopyQuinzenalWhatsApp">
+          <span class="btn-icon-q">💬</span>
+          <div class="btn-text-q">
+            <strong>Copiar p/ WhatsApp da Barbearia</strong>
+            <small>Texto pronto com valores para acerto via Pix</small>
+          </div>
+        </button>
+
+        <button class="btn-q-action btn-q-csv" id="btnExportQuinzenalCsv">
+          <span class="btn-icon-q">📊</span>
+          <div class="btn-text-q">
+            <strong>Exportar CSV Quinzena</strong>
+            <small>Planilha com detalhamento das vendas do período</small>
+          </div>
+        </button>
+      </div>
+
+      <!-- Tabela de Detalhamento Dia a Dia da Quinzena -->
+      <div class="quinzenal-subtable-container">
+        <div class="subtable-header">
+          <h4 class="subtable-title">📅 DETALHAMENTO DIA A DIA DA QUINZENA (<span id="qPeriodRangeLabel">01/09 a 15/09</span>)</h4>
+          <span class="subtable-counter" id="qDaysCounter">0 dias</span>
+        </div>
+        <div class="table-responsive">
+          <table class="telemetry-table q-daily-table" id="quinzenalDailyTable">
+            <thead>
+              <tr>
+                <th>DATA</th>
+                <th>FATURAMENTO DO DIA</th>
+                <th>FICHAS</th>
+                <th>BARBEARIA (<span id="tableQuinzenaBarberPercent">50</span>%)</th>
+                <th>SEU LUCRO</th>
+                <th>MEIO DE PAGAMENTO</th>
+              </tr>
+            </thead>
+            <tbody id="quinzenalDailyTableBody">
+              <!-- Inserido dinamicamente via app.js -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Histórico de Quinzenas Anteriores Fechadas -->
+      <div class="quinzenal-subtable-container" style="margin-top: 1.5rem; border-top: 1px solid var(--border-subtle); padding-top: 1.2rem;">
+        <div class="subtable-header">
+          <h4 class="subtable-title">📜 HISTÓRICO DE QUINZENAS ANTERIORES FECHADAS & ARQUIVADAS</h4>
+          <span class="subtable-counter" id="closedQuinzenasCounterBadge">0 quinzenas fechadas</span>
+        </div>
+        <div class="table-responsive">
+          <table class="telemetry-table" id="closedQuinzenasTable">
+            <thead>
+              <tr>
+                <th>QUINZENA / PERÍODO</th>
+                <th>DATA FECHAMENTO</th>
+                <th>VALOR TOTAL</th>
+                <th>FICHAS</th>
+                <th>REPASSE BARBEARIA</th>
+                <th>SEU LUCRO</th>
+                <th>RESPONSÁVEL / OBS</th>
+                <th>COMPROVANTE</th>
+              </tr>
+            </thead>
+            <tbody id="closedQuinzenasTableBody">
+              <!-- Inserido dinamicamente via app.js -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
 
     <!-- 4. HISTÓRICO DE CAIXAS ANTERIORES FECHADOS (SANGRIA & REPASSE) -->
     <section class="panel-card closed-registers-panel" id="closedRegistersSection" style="margin-bottom: 1.5rem;">
@@ -629,6 +844,68 @@
     </div>
   </div>
 
+  <!-- MODAL: Fechamento de Caixa Quinzenal (15 Dias) -->
+  <div class="modal-overlay" id="quinzenalModal" aria-hidden="true">
+    <div class="modal-box modal-large">
+      <div class="modal-header">
+        <span class="modal-icon-badge">🗓️</span>
+        <h3>FECHAMENTO DE CAIXA QUINZENAL (15 DIAS)</h3>
+      </div>
+      <div class="modal-body">
+        <p>Você está encerrando oficialmente a apuração da quinzena para acerto de contas com o parceiro comercial (Barbearia).</p>
+        
+        <div class="sangria-summary-box" style="margin-bottom: 1.2rem;">
+          <div class="sangria-row">
+            <span>Quinzena / Período:</span>
+            <strong class="text-blue font-mono" id="modalQPeriodLabel">1ª Quinzena (01/09 a 15/09)</strong>
+          </div>
+          <div class="sangria-row">
+            <span>Faturamento Bruto no Período:</span>
+            <strong class="text-green text-large font-digital" id="modalQGrossTotal">R$ 0,00</strong>
+          </div>
+          <div class="sangria-row">
+            <span>Total de Fichas Encerradas:</span>
+            <strong id="modalQTokensTotal">0 fichas</strong>
+          </div>
+          <div class="sangria-split-box">
+            <div class="split-row">
+              <span>💈 Repasse Barbearia (<span id="modalQBarberPercent">50</span>%):</span>
+              <strong class="text-yellow font-mono" id="modalQBarberAmount">R$ 0,00</strong>
+            </div>
+            <div class="split-row">
+              <span>🕹️ Seu Lucro Líquido (<span id="modalQOwnerPercent">50</span>%):</span>
+              <strong class="text-green font-mono" id="modalQOwnerAmount">R$ 0,00</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="modalQResponsavel">Responsável pelo Fechamento:</label>
+          <input type="text" id="modalQResponsavel" value="Daniel" class="arcade-input" placeholder="Seu nome">
+        </div>
+        <div class="form-group">
+          <label for="modalQObservacao">Observações do Acerto / Chave Pix:</label>
+          <input type="text" id="modalQObservacao" class="arcade-input" placeholder="Ex: Acerto 1ª Quinzena pago via Pix ao Barbeiro">
+        </div>
+
+        <div class="form-group" style="background: #101018; padding: 0.6rem 0.8rem; border-radius: 8px; border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 0.5rem;">
+          <label class="checkbox-label" style="margin: 0; cursor: pointer;">
+            <input type="checkbox" id="modalQEfetuarSangriaCheckbox" checked>
+            <span style="font-weight: 600; color: #38bdf8;">💸 Efetuar também a sangria do Caixa Atual da Sessão (Zerar sessão)</span>
+          </label>
+          <label class="checkbox-label" style="margin: 0; cursor: pointer;">
+            <input type="checkbox" id="modalQGeneratePdfCheckbox" checked>
+            <span style="font-weight: 600; color: var(--coin-gold);">📄 Baixar Comprovante Oficial em PDF da Quinzena</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; gap: 0.6rem; justify-content: flex-end; flex-wrap: wrap;">
+        <button class="btn-cancel" id="btnCancelQuinzenalModal">Cancelar</button>
+        <button class="btn-confirm-fire" id="btnConfirmQuinzenalClosing" style="background: linear-gradient(135deg, #00c853, #009624); border-color: #00e676;">CONFIRMAR FECHAMENTO DA QUINZENA</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL: Registro Manual de Venda -->
   <div class="modal-overlay" id="manualSaleModal" aria-hidden="true">
     <div class="modal-box">
@@ -745,7 +1022,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
   
-  <!-- Scripts do Sistema (Cache-busting v2.6.0) -->
-  <script src="app.js?v=2.6.0"></script>
+  <!-- Scripts do Sistema (Cache-busting v2.7.0) -->
+  <script src="app.js?v=2.7.0"></script>
 </body>
 </html>
