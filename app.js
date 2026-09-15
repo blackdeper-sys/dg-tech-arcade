@@ -32,8 +32,11 @@ const defaultState = {
   generalTokens: 0,
   generalCash: 0.00,
 
-  // Divisão com a Barbearia
+  // Divisão com a Barbearia & Configurações
   barberSplitPercent: 50,
+  configOverride: false,
+  lastConfigSavedTs: 0,
+  quinzenalResponsavel: 'Daniel',
 
   // Estatísticas Rápidas
   authorizedCoinsToday: 0,
@@ -383,9 +386,15 @@ async function fetchServerStatus() {
 
       if (s.general_tokens !== undefined) appState.generalTokens = s.general_tokens;
       if (s.general_cash !== undefined) appState.generalCash = s.general_cash;
-      if (s.price_per_token !== undefined) appState.tokenPrice = s.price_per_token;
-      if (s.require_pin !== undefined) appState.requirePin = s.require_pin;
-      if (s.barber_split_percent !== undefined) appState.barberSplitPercent = s.barber_split_percent;
+
+      // Preserva configurações salvas localmente se o usuário customizou
+      const serverConfigTs = (s.config_updated_at || 0) * 1000;
+      const shouldUpdateConfig = !appState.configOverride || (serverConfigTs > (appState.lastConfigSavedTs || 0));
+      if (shouldUpdateConfig) {
+        if (s.price_per_token !== undefined) appState.tokenPrice = s.price_per_token;
+        if (s.require_pin !== undefined) appState.requirePin = s.require_pin;
+        if (s.barber_split_percent !== undefined) appState.barberSplitPercent = s.barber_split_percent;
+      }
 
       // Métricas Oficiais do Servidor (Fuso de Brasília)
       if (s.today_cash !== undefined) appState.todayCash = s.today_cash;
@@ -1367,6 +1376,46 @@ function updateQuinzenaPillDates() {
   setText('pillPrev1Dates', `${bp1.startDateStr.slice(0, 5)} a ${bp1.endDateStr.slice(0, 5)}`);
 }
 
+async function saveBarberSplit(newPercent, showToastMsg = true) {
+  const pct = Math.max(0, Math.min(100, parseInt(newPercent, 10) || 50));
+  appState.barberSplitPercent = pct;
+  appState.configOverride = true;
+  appState.lastConfigSavedTs = Date.now();
+  saveLocalState();
+  renderAllData();
+
+  // Atualiza inputs em tela
+  const qInput = document.getElementById('quinzenalSplitInput');
+  if (qInput) qInput.value = pct;
+  const sInput = document.getElementById('settingsBarberSplit');
+  if (sInput) sInput.value = pct;
+  const mInput = document.getElementById('modalQBarberSplitInput');
+  if (mInput) mInput.value = pct;
+
+  // Atualiza botões de preset
+  document.querySelectorAll('#quinzenalSplitBar .split-preset-btn').forEach(b => {
+    const p = parseInt(b.getAttribute('data-split'), 10);
+    if (p === pct) b.classList.add('active');
+    else b.classList.remove('active');
+  });
+
+  // Envia para o backend Python (porta 8088 / túnel)
+  try {
+    await fetch(`${getApiBase()}/api/config/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        barber_split_percent: pct
+      })
+    });
+  } catch (e) {}
+
+  if (showToastMsg) {
+    showToast(`💈 Divisão com a Barbearia salva em ${pct}%!`);
+    appendHardwareFeed(`[CONFIG] Divisão quinzenal da barbearia definida em ${pct}%.`);
+  }
+}
+
 function renderQuinzenalSection() {
   updateQuinzenaPillDates();
 
@@ -1405,6 +1454,17 @@ function renderQuinzenalSection() {
 
   setText('qPeriodRangeLabel', `${data.startDateStr} a ${data.endDateStr}`);
   setText('qDaysCounter', `${data.dailyList.length} ${data.dailyList.length === 1 ? 'dia com venda' : 'dias com vendas'}`);
+
+  // Atualiza barra de divisão inline da barbearia
+  const qSplitInput = document.getElementById('quinzenalSplitInput');
+  if (qSplitInput && document.activeElement !== qSplitInput) {
+    qSplitInput.value = data.splitPercent;
+  }
+  document.querySelectorAll('#quinzenalSplitBar .split-preset-btn').forEach(b => {
+    const p = parseInt(b.getAttribute('data-split'), 10);
+    if (p === data.splitPercent) b.classList.add('active');
+    else b.classList.remove('active');
+  });
 
   // Renderiza Tabela Dia a Dia
   const dailyTbody = document.getElementById('quinzenalDailyTableBody');
@@ -1804,11 +1864,39 @@ function exportQuinzenalCsv(data) {
   showToast('📊 Planilha CSV da quinzena baixada!');
 }
 
-function openQuinzenalModal() {
-  if (!currentQuinzenaData) {
-    const bounds = getQuinzenaDateBounds(appState.quinzenalFilter || 'current_1');
-    currentQuinzenaData = computeQuinzenalData(bounds);
+function updateModalSplitPresets(currentSplit) {
+  document.querySelectorAll('.split-preset-btn[data-modal-split]').forEach(b => {
+    const p = parseInt(b.getAttribute('data-modal-split'), 10);
+    if (p === currentSplit) b.classList.add('active');
+    else b.classList.remove('active');
+  });
+}
+
+function onModalSplitChange(newPercent) {
+  const pct = Math.max(0, Math.min(100, parseInt(newPercent, 10) || 50));
+  if (!currentQuinzenaData) return;
+  currentQuinzenaData.splitPercent = pct;
+  currentQuinzenaData.barberShare = roundCurrency((currentQuinzenaData.totalCash * pct) / 100);
+  currentQuinzenaData.ownerShare = roundCurrency(currentQuinzenaData.totalCash - currentQuinzenaData.barberShare);
+
+  setText('modalQBarberPercent', pct);
+  setText('modalQBarberAmount', `R$ ${formatCurrency(currentQuinzenaData.barberShare)}`);
+  setText('modalQOwnerPercent', 100 - pct);
+  setText('modalQOwnerAmount', `R$ ${formatCurrency(currentQuinzenaData.ownerShare)}`);
+
+  const splitInput = document.getElementById('modalQBarberSplitInput');
+  if (splitInput && document.activeElement !== splitInput) {
+    splitInput.value = pct;
   }
+  updateModalSplitPresets(pct);
+
+  // Sincroniza divisão com o estado geral
+  saveBarberSplit(pct, false);
+}
+
+function openQuinzenalModal() {
+  const bounds = getQuinzenaDateBounds(appState.quinzenalFilter || 'current_1');
+  currentQuinzenaData = computeQuinzenalData(bounds);
 
   setText('modalQPeriodLabel', currentQuinzenaData.label);
   setText('modalQGrossTotal', `R$ ${formatCurrency(currentQuinzenaData.totalCash)}`);
@@ -1818,11 +1906,21 @@ function openQuinzenalModal() {
   setText('modalQOwnerPercent', 100 - currentQuinzenaData.splitPercent);
   setText('modalQOwnerAmount', `R$ ${formatCurrency(currentQuinzenaData.ownerShare)}`);
 
+  const splitInput = document.getElementById('modalQBarberSplitInput');
+  if (splitInput) {
+    splitInput.value = currentQuinzenaData.splitPercent;
+  }
+  updateModalSplitPresets(currentQuinzenaData.splitPercent);
+
   const respInput = document.getElementById('modalQResponsavel');
-  if (respInput) respInput.value = 'Daniel';
+  if (respInput) {
+    respInput.value = appState.quinzenalResponsavel || 'Daniel';
+  }
 
   const obsInput = document.getElementById('modalQObservacao');
-  if (obsInput) obsInput.value = `Fechamento ${currentQuinzenaData.shortLabel} — Barbearia`;
+  if (obsInput && (!obsInput.value || obsInput.value.startsWith('Fechamento '))) {
+    obsInput.value = `Fechamento ${currentQuinzenaData.shortLabel} — Barbearia`;
+  }
 
   const sangriaCb = document.getElementById('modalQEfetuarSangriaCheckbox');
   if (sangriaCb) {
@@ -1835,10 +1933,22 @@ function openQuinzenalModal() {
 async function confirmQuinzenalClosing() {
   if (!currentQuinzenaData) return;
 
-  const responsavel = (document.getElementById('modalQResponsavel')?.value || 'Daniel').trim();
+  const responsavel = (document.getElementById('modalQResponsavel')?.value || appState.quinzenalResponsavel || 'Daniel').trim();
   const observacao = (document.getElementById('modalQObservacao')?.value || '').trim();
   const efetuarSangria = document.getElementById('modalQEfetuarSangriaCheckbox')?.checked ?? false;
   const shouldGenPdf = document.getElementById('modalQGeneratePdfCheckbox')?.checked ?? true;
+  const modalSplit = parseInt(document.getElementById('modalQBarberSplitInput')?.value || currentQuinzenaData.splitPercent, 10) || currentQuinzenaData.splitPercent;
+
+  // Atualiza se houve mudança de divisão no modal
+  if (modalSplit !== currentQuinzenaData.splitPercent) {
+    currentQuinzenaData.splitPercent = modalSplit;
+    currentQuinzenaData.barberShare = roundCurrency((currentQuinzenaData.totalCash * modalSplit) / 100);
+    currentQuinzenaData.ownerShare = roundCurrency(currentQuinzenaData.totalCash - currentQuinzenaData.barberShare);
+  }
+
+  // Persiste o responsável para nunca perder
+  appState.quinzenalResponsavel = responsavel;
+  saveLocalState();
 
   closeModal('quinzenalModal');
 
@@ -1913,7 +2023,7 @@ async function confirmQuinzenalClosing() {
     appState.closedQuinzenas.push(newReg);
     saveLocalState();
     renderAllData();
-    showToast('✅ Fechamento salvo localmente no painel!');
+    showToast('✅ Fechamento salvo com sucesso no painel!');
 
     if (shouldGenPdf) {
       generateQuinzenalPdfReceipt({
@@ -2641,7 +2751,39 @@ function initEventListeners() {
 
   document.getElementById('btnOpenQuinzenalModal')?.addEventListener('click', openQuinzenalModal);
   document.getElementById('btnCancelQuinzenalModal')?.addEventListener('click', () => closeModal('quinzenalModal'));
+  document.getElementById('btnCloseQuinzenalModalX')?.addEventListener('click', () => closeModal('quinzenalModal'));
   document.getElementById('btnConfirmQuinzenalClosing')?.addEventListener('click', confirmQuinzenalClosing);
+
+  // Ajuste da divisão da barbearia inline na Seção Quinzenal
+  document.getElementById('btnSaveQuinzenalSplit')?.addEventListener('click', () => {
+    const val = document.getElementById('quinzenalSplitInput')?.value;
+    saveBarberSplit(val, true);
+  });
+
+  document.getElementById('quinzenalSplitInput')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      saveBarberSplit(e.target.value, true);
+    }
+  });
+
+  document.querySelectorAll('#quinzenalSplitBar .split-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const splitVal = btn.getAttribute('data-split');
+      saveBarberSplit(splitVal, true);
+    });
+  });
+
+  // Ajuste da divisão da barbearia dentro do Modal Quinzenal
+  document.getElementById('modalQBarberSplitInput')?.addEventListener('input', (e) => {
+    onModalSplitChange(e.target.value);
+  });
+
+  document.querySelectorAll('.split-preset-btn[data-modal-split]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const splitVal = btn.getAttribute('data-modal-split');
+      onModalSplitChange(splitVal);
+    });
+  });
 
   document.getElementById('btnDownloadQuinzenalPdf')?.addEventListener('click', () => {
     if (currentQuinzenaData) {
@@ -2706,6 +2848,8 @@ function initEventListeners() {
     appState.soundEnabled = newSound;
     appState.requirePin = reqPin;
     appState.barberSplitPercent = newSplit;
+    appState.configOverride = true;
+    appState.lastConfigSavedTs = Date.now();
 
     const quickPin = document.getElementById('pinInputQuick');
     if (quickPin) quickPin.value = newPin;
@@ -2720,6 +2864,7 @@ function initEventListeners() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pin: newPin,
+          security_pin: newPin,
           require_pin: reqPin,
           price_per_token: newPrice,
           barber_split_percent: newSplit
@@ -2728,6 +2873,7 @@ function initEventListeners() {
     } catch (e) {}
 
     appendHardwareFeed('[CONFIG] Configurações e divisão da barbearia salvas.');
+    showToast('⚙️ Configurações salvas com sucesso!');
     renderAllData();
   });
 

@@ -526,6 +526,7 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 safe_copy["pin_configured"] = bool(sales_data.get("security_pin"))
                 safe_copy["require_pin"] = sales_data.get("require_pin", False)
                 safe_copy["barber_split_percent"] = sales_data.get("barber_split_percent", 50)
+                safe_copy["config_updated_at"] = sales_data.get("config_updated_at", 0)
                 safe_copy["last_mp_sync"] = sales_data.get("last_mp_sync", "Nunca")
                 safe_copy["last_mp_status"] = sales_data.get("last_mp_status", "Online")
                 # Não expor senhas e tokens reais
@@ -934,13 +935,22 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                     sales_data["price_per_token"] = max(0.50, float(req_data["price_per_token"]))
                 if "security_pin" in req_data and str(req_data["security_pin"]).strip():
                     sales_data["security_pin"] = str(req_data["security_pin"]).strip()
+                elif "pin" in req_data and str(req_data["pin"]).strip():
+                    sales_data["security_pin"] = str(req_data["pin"]).strip()
                 if "require_pin" in req_data:
                     sales_data["require_pin"] = bool(req_data["require_pin"])
                 if "mp_access_token" in req_data and str(req_data["mp_access_token"]).strip():
                     sales_data["mp_access_token"] = str(req_data["mp_access_token"]).strip()
+                sales_data["config_updated_at"] = time.time()
                 save_data()
 
-            self.send_json(200, {"success": True, "message": "Configurações salvas com sucesso"})
+            self.send_json(200, {
+                "success": True, 
+                "message": "Configurações salvas com sucesso",
+                "barber_split_percent": sales_data.get("barber_split_percent", 50),
+                "price_per_token": sales_data.get("price_per_token", 2.50),
+                "config_updated_at": sales_data.get("config_updated_at", 0)
+            })
         except Exception as e:
             self.send_json(500, {"success": False, "error": str(e)})
 

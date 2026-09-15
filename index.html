@@ -455,6 +455,24 @@
           </div>
           <button class="btn-secondary btn-compact" id="btnApplyCustomDates">Filtrar</button>
         </div>
+
+        <!-- Barra de Configuração e Ajuste da Divisão da Barbearia -->
+        <div class="quinzenal-split-bar" id="quinzenalSplitBar">
+          <div class="split-control-inline">
+            <span class="selector-title-mini" style="color: #00e5ff;">💈 DIVISÃO COM A BARBEARIA:</span>
+            <input type="number" id="quinzenalSplitInput" class="split-percent-input" min="0" max="100" value="50">
+            <span style="font-weight: 700; color: #38bdf8;">%</span>
+            <div style="display: flex; gap: 0.3rem;">
+              <button type="button" class="split-preset-btn" data-split="30">30%</button>
+              <button type="button" class="split-preset-btn" data-split="40">40%</button>
+              <button type="button" class="split-preset-btn" data-split="50">50%</button>
+              <button type="button" class="split-preset-btn" data-split="60">60%</button>
+            </div>
+          </div>
+          <button type="button" class="btn-save-inline" id="btnSaveQuinzenalSplit" title="Salvar porcentagem de divisão permanentemente">
+            <span>💾</span> Salvar Divisão
+          </button>
+        </div>
       </div>
 
       <!-- Cards Métricos de Apuração da Quinzena Selecionada -->
@@ -850,58 +868,77 @@
       <div class="modal-header">
         <span class="modal-icon-badge">🗓️</span>
         <h3>FECHAMENTO DE CAIXA QUINZENAL (15 DIAS)</h3>
+        <button class="modal-close-btn" id="btnCloseQuinzenalModalX" title="Fechar">✕</button>
       </div>
       <div class="modal-body">
-        <p>Você está encerrando oficialmente a apuração da quinzena para acerto de contas com o parceiro comercial (Barbearia).</p>
+        <p style="margin-bottom: 0.65rem; font-size: 0.86rem;">Apuração oficial da quinzena para acerto de contas e repasse com a Barbearia.</p>
         
-        <div class="sangria-summary-box" style="margin-bottom: 1.2rem;">
-          <div class="sangria-row">
-            <span>Quinzena / Período:</span>
-            <strong class="text-blue font-mono" id="modalQPeriodLabel">1ª Quinzena (01/09 a 15/09)</strong>
-          </div>
-          <div class="sangria-row">
-            <span>Faturamento Bruto no Período:</span>
-            <strong class="text-green text-large font-digital" id="modalQGrossTotal">R$ 0,00</strong>
-          </div>
-          <div class="sangria-row">
-            <span>Total de Fichas Encerradas:</span>
-            <strong id="modalQTokensTotal">0 fichas</strong>
-          </div>
-          <div class="sangria-split-box">
-            <div class="split-row">
-              <span>💈 Repasse Barbearia (<span id="modalQBarberPercent">50</span>%):</span>
-              <strong class="text-yellow font-mono" id="modalQBarberAmount">R$ 0,00</strong>
+        <!-- Grid Compacto de Resumo Quinzenal -->
+        <div class="quinzenal-summary-grid">
+          <div class="q-summary-card highlight-gross">
+            <div>
+              <span class="q-summary-title">TOTAL BRUTO ARRECADADO</span>
+              <div class="q-summary-val font-digital text-green" id="modalQGrossTotal">R$ 0,00</div>
             </div>
-            <div class="split-row">
-              <span>🕹️ Seu Lucro Líquido (<span id="modalQOwnerPercent">50</span>%):</span>
-              <strong class="text-green font-mono" id="modalQOwnerAmount">R$ 0,00</strong>
+            <div style="text-align: right;">
+              <span class="q-summary-title" id="modalQPeriodLabel">1ª Quinzena</span>
+              <div class="q-summary-sub font-mono" id="modalQTokensTotal">0 fichas</div>
             </div>
+          </div>
+          
+          <div class="q-summary-card highlight-barber">
+            <span class="q-summary-title">💈 REPASSE BARBEARIA (<span id="modalQBarberPercent">50</span>%)</span>
+            <div class="q-summary-val font-digital text-yellow" id="modalQBarberAmount">R$ 0,00</div>
+            <div class="q-summary-sub">Valor líquido a repassar</div>
+          </div>
+
+          <div class="q-summary-card highlight-owner">
+            <span class="q-summary-title">🕹️ SEU LUCRO LÍQUIDO (<span id="modalQOwnerPercent">50</span>%)</span>
+            <div class="q-summary-val font-digital text-green" id="modalQOwnerAmount">R$ 0,00</div>
+            <div class="q-summary-sub">Lucro livre do proprietário</div>
           </div>
         </div>
 
-        <div class="form-group">
+        <!-- Ajuste da Porcentagem de Divisão no Próprio Fechamento -->
+        <div class="form-group" style="margin-top: 0.45rem; background: #0c0c16; padding: 0.55rem 0.8rem; border-radius: 8px; border: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.4rem;">
+          <label for="modalQBarberSplitInput" style="margin: 0; font-size: 0.82rem; color: var(--text-main); font-weight: 600;">
+            Divisão Barbearia (%):
+          </label>
+          <div style="display: flex; align-items: center; gap: 0.35rem;">
+            <input type="number" id="modalQBarberSplitInput" min="0" max="100" value="50" class="split-percent-input" style="width: 58px; height: 30px; font-size: 0.95rem;">
+            <span style="font-weight: 700; color: #38bdf8; font-size: 0.85rem;">%</span>
+            <button type="button" class="split-preset-btn" data-modal-split="30">30%</button>
+            <button type="button" class="split-preset-btn" data-modal-split="40">40%</button>
+            <button type="button" class="split-preset-btn" data-modal-split="50">50%</button>
+            <button type="button" class="split-preset-btn" data-modal-split="60">60%</button>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 0.5rem;">
           <label for="modalQResponsavel">Responsável pelo Fechamento:</label>
-          <input type="text" id="modalQResponsavel" value="Daniel" class="arcade-input" placeholder="Seu nome">
+          <input type="text" id="modalQResponsavel" value="Daniel" class="arcade-input" placeholder="Seu nome" style="padding: 0.45rem 0.75rem;">
         </div>
-        <div class="form-group">
+        <div class="form-group" style="margin-top: 0.5rem;">
           <label for="modalQObservacao">Observações do Acerto / Chave Pix:</label>
-          <input type="text" id="modalQObservacao" class="arcade-input" placeholder="Ex: Acerto 1ª Quinzena pago via Pix ao Barbeiro">
+          <input type="text" id="modalQObservacao" class="arcade-input" placeholder="Ex: Acerto pago via Pix ao Barbeiro" style="padding: 0.45rem 0.75rem;">
         </div>
 
-        <div class="form-group" style="background: #101018; padding: 0.6rem 0.8rem; border-radius: 8px; border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 0.5rem;">
+        <div class="form-group" style="margin-top: 0.5rem; background: #0c0c16; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 0.4rem;">
           <label class="checkbox-label" style="margin: 0; cursor: pointer;">
             <input type="checkbox" id="modalQEfetuarSangriaCheckbox" checked>
-            <span style="font-weight: 600; color: #38bdf8;">💸 Efetuar também a sangria do Caixa Atual da Sessão (Zerar sessão)</span>
+            <span style="font-weight: 600; color: #38bdf8; font-size: 0.82rem;">💸 Efetuar também a sangria do Caixa Atual da Sessão (Zerar sessão)</span>
           </label>
           <label class="checkbox-label" style="margin: 0; cursor: pointer;">
             <input type="checkbox" id="modalQGeneratePdfCheckbox" checked>
-            <span style="font-weight: 600; color: var(--coin-gold);">📄 Baixar Comprovante Oficial em PDF da Quinzena</span>
+            <span style="font-weight: 600; color: var(--coin-gold); font-size: 0.82rem;">📄 Baixar Comprovante Oficial em PDF da Quinzena</span>
           </label>
         </div>
       </div>
       <div class="modal-footer" style="display: flex; gap: 0.6rem; justify-content: flex-end; flex-wrap: wrap;">
         <button class="btn-cancel" id="btnCancelQuinzenalModal">Cancelar</button>
-        <button class="btn-confirm-fire" id="btnConfirmQuinzenalClosing" style="background: linear-gradient(135deg, #00c853, #009624); border-color: #00e676;">CONFIRMAR FECHAMENTO DA QUINZENA</button>
+        <button class="btn-confirm-fire" id="btnConfirmQuinzenalClosing" style="background: linear-gradient(135deg, #00c853, #009624); border-color: #00e676; padding: 0.65rem 1.3rem;">
+          💾 SALVAR E CONFIRMAR FECHAMENTO
+        </button>
       </div>
     </div>
   </div>
