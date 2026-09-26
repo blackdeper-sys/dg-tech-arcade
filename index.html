@@ -33,9 +33,9 @@
       </div>
 
       <div class="header-status-panel">
-        <div class="status-indicator online" id="mpSyncStatusBadge" title="Telemetria Nuvem Mercado Pago da Barbearia">
+        <div class="status-indicator online" id="machinePointBadge" title="Ponto / Máquina Ativa">
           <span class="pulse-dot" style="background:#00e5ff;box-shadow:0 0 10px #00e5ff;"></span>
-          <span class="status-text" id="mpSyncText">BARBEARIA (PIX NUVEM)</span>
+          <span class="status-text" id="headerMachineName">DISTRIBUIDORA (100% DG TECH)</span>
         </div>
 
         <div class="status-indicator online" id="connectionStatusBadge">
@@ -216,11 +216,11 @@
         </div>
         <div class="card-footer card-footer-split">
           <div class="footer-stat">
-            <span class="stat-label">Barbearia (<span id="barberSplitPercentDisplay">50</span>%):</span>
+            <span class="stat-label"><span id="partnerSplitLabel">Estabelecimento</span> (<span id="barberSplitPercentDisplay">0</span>%):</span>
             <strong class="stat-value text-yellow" id="barberSplitValue">R$ 0,00</strong>
           </div>
           <div class="footer-stat">
-            <span class="stat-label">Seu Lucro:</span>
+            <span class="stat-label">DG Tech Arcade (<span id="ownerSplitPercentDisplay">100</span>%):</span>
             <strong class="stat-value text-green" id="ownerSplitValue">R$ 0,00</strong>
           </div>
           <button class="btn-micro" id="btnQuickSangria" title="Realizar fechamento deste caixa">Sangria</button>
@@ -307,21 +307,49 @@
           <div class="panel-title-group">
             <span class="panel-icon">📡</span>
             <div>
-              <h3 class="panel-title">MÓDULO RELÉ COIN (ESP-01S)</h3>
-              <p class="panel-sub">Comunicação direta com o gabinete do fliperama</p>
+              <h3 class="panel-title">CONTROLADOR DA MÁQUINA (<span id="hwControllerModel">ESP-01S</span>)</h3>
+              <p class="panel-sub" id="hwMachinePointLabel">Ponto: Distribuidora • DG Tech Arcade (100%)</p>
             </div>
           </div>
-          <div class="status-indicator online" id="esp01StatusBadge">
+          <div class="status-indicator offline" id="esp01StatusBadge">
             <span class="pulse-dot"></span>
-            <span id="esp01StatusText">ONLINE</span>
+            <span id="esp01StatusText">OFFLINE</span>
           </div>
         </div>
 
         <div class="hardware-console">
+          <!-- Bloco Informativo de Telemetria do Controlador Requisito 5 -->
+          <div class="controller-telemetry-box" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:0.6rem; background:#0c101c; border:1px solid #1c2538; border-radius:10px; padding:0.75rem; margin-bottom:0.85rem; font-size:0.82rem;">
+            <div>
+              <span style="color:#7a8fa6; display:block; font-size:0.72rem; text-transform:uppercase;">Máquina / Ponto:</span>
+              <strong id="hwMachineNameDisplay" style="color:#00e5ff; font-size:0.95rem;">Distribuidora</strong>
+            </div>
+            <div>
+              <span style="color:#7a8fa6; display:block; font-size:0.72rem; text-transform:uppercase;">Controlador:</span>
+              <strong id="hwControllerTypeDisplay" style="color:#fff;">ESP-01S</strong>
+            </div>
+            <div>
+              <span style="color:#7a8fa6; display:block; font-size:0.72rem; text-transform:uppercase;">IP Controlador:</span>
+              <strong id="hwControllerIpDisplay" style="color:#fff; font-family:monospace;">192.168.18.99</strong>
+            </div>
+            <div>
+              <span style="color:#7a8fa6; display:block; font-size:0.72rem; text-transform:uppercase;">Último Contato:</span>
+              <strong id="hwLastContactDisplay" style="color:#ff1e42;">Aguardando ping...</strong>
+            </div>
+            <div>
+              <span style="color:#7a8fa6; display:block; font-size:0.72rem; text-transform:uppercase;">Último Pulso:</span>
+              <strong id="hwLastPulseDisplay" style="color:#ffd600;">Nenhum</strong>
+            </div>
+            <div style="grid-column: 1 / -1; border-top: 1px dashed #1c2538; padding-top: 0.4rem;">
+              <span style="color:#7a8fa6; font-size:0.72rem; text-transform:uppercase;">Último Comando Confirmado: </span>
+              <strong id="hwLastCmdDisplay" style="color:#00e5ff; font-family:monospace; font-size:0.8rem;">Nenhum comando ainda</strong>
+            </div>
+          </div>
+
           <div class="input-with-action">
             <label for="esp01IpInput" class="compact-label">IP ESP-01S:</label>
             <input type="text" id="esp01IpInput" class="arcade-input-compact" value="192.168.18.99" placeholder="192.168.18.99">
-            <button class="btn-micro" id="btnPingEsp01" title="Testar Conexão com ESP-01S">Ping Teste</button>
+            <button class="btn-micro" id="btnPingEsp01" title="Testar Conexão Real com ESP-01S">Ping Teste</button>
           </div>
 
           <div class="quick-maintenance-actions">
@@ -338,7 +366,7 @@
 
           <!-- Feed de Eventos do Hardware -->
           <div class="hardware-feed" id="hardwareFeed">
-            <div class="feed-line"><span class="feed-time">SISTEMA</span> DG TECH ARCADE pronto para acionamento via 4G / Wi-Fi.</div>
+            <div class="feed-line"><span class="feed-time">SISTEMA</span> DG TECH ARCADE pronto para acionamento com confirmação real.</div>
           </div>
         </div>
       </section>
@@ -714,6 +742,44 @@
       </div>
     </section>
 
+    <!-- 6. HISTÓRICO TÉCNICO & AUDITORIA DE COMANDOS DO CONTROLADOR (ESP-01S) -->
+    <section class="panel-card technical-audit-panel" id="technicalAuditSection" style="margin-top: 1.5rem;">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="panel-icon">🛠️</span>
+          <div>
+            <h3 class="panel-title">HISTÓRICO TÉCNICO & AUDITORIA DE DISPAROS</h3>
+            <p class="panel-sub">Registro de comandos físicos, confirmações reais e proteção contra duplicidade</p>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <button class="btn-micro" id="btnRefreshTechLogs" title="Atualizar Histórico Técnico">Atualizar Logs</button>
+          <span id="techLogsCounterBadge" class="logs-counter-badge">0 registros</span>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="telemetry-table" id="technicalAuditTable">
+          <thead>
+            <tr>
+              <th>DATA / HORA</th>
+              <th>MÁQUINA / PONTO</th>
+              <th>FICHAS</th>
+              <th>ID DO COMANDO</th>
+              <th>RESULTADO</th>
+              <th>CONTABILIZADO NO CAIXA?</th>
+              <th>RESPOSTA DO CONTROLADOR</th>
+            </tr>
+          </thead>
+          <tbody id="technicalAuditTableBody">
+            <tr>
+              <td colspan="7" style="text-align:center; padding:1.2rem; color:#7a8fa6;">Carregando histórico técnico...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
   </main>
 
   <!-- Rodapé -->
@@ -985,6 +1051,24 @@
       </div>
       <div class="modal-body">
         <div class="form-group">
+          <label for="settingsMachineName">Nome da Máquina / Ponto:</label>
+          <input type="text" id="settingsMachineName" value="Distribuidora" class="arcade-input">
+        </div>
+        <div class="form-group">
+          <label for="settingsMachineOwner">Proprietário do Fliperama:</label>
+          <input type="text" id="settingsMachineOwner" value="DG Tech Arcade" class="arcade-input">
+        </div>
+        <div class="form-group">
+          <label for="settingsOwnerSplit">Divisão DG Tech Arcade (% do Proprietário):</label>
+          <input type="number" id="settingsOwnerSplit" min="0" max="100" value="100" class="arcade-input">
+          <small class="help-text">Porcentagem destinada à DG Tech Arcade (Padrão Distribuidora: 100%).</small>
+        </div>
+        <div class="form-group">
+          <label for="settingsBarberSplit">Divisão Estabelecimento / Parceiro (% do Ponto):</label>
+          <input type="number" id="settingsBarberSplit" min="0" max="100" value="0" class="arcade-input">
+          <small class="help-text">Porcentagem destinada ao estabelecimento (Padrão Distribuidora: 0%).</small>
+        </div>
+        <div class="form-group">
           <label for="settingsEsp01Ip">IP do Módulo Relé (ESP-01S):</label>
           <input type="text" id="settingsEsp01Ip" value="192.168.18.99" class="arcade-input">
           <small class="help-text">IP local onde a placa relé está conectada na rede Wi-Fi.</small>
@@ -992,11 +1076,6 @@
         <div class="form-group">
           <label for="inputTokenPrice">Preço Base da Ficha (R$):</label>
           <input type="number" id="inputTokenPrice" step="0.50" min="0.50" value="2.50" class="arcade-input">
-        </div>
-        <div class="form-group">
-          <label for="settingsBarberSplit">Divisão com a Barbearia (% do Barbeiro):</label>
-          <input type="number" id="settingsBarberSplit" min="0" max="100" value="50" class="arcade-input">
-          <small class="help-text">Porcentagem do faturamento destinada à barbearia pelo ponto comercial (Padrão: 50%).</small>
         </div>
         <div class="form-group">
           <label for="settingsPin">PIN de Segurança Remoto (para 4G):</label>

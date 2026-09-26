@@ -40,6 +40,43 @@ LINK_FILE = os.path.join(BASE_DIR, "LINK_ACESSO_4G.txt")
 # Token de Produção do Mercado Pago vinculado ao Fliperama
 DEFAULT_MP_TOKEN = "APP_USR-5529824471056733-082916-765dca4d1caf210308a55984c4d48abe-1291350873"
 
+DEFAULT_MACHINES = [
+    {
+        "id": "distribuidora",
+        "nome": "Distribuidora",
+        "estabelecimento": "Distribuidora",
+        "proprietario": "DG Tech Arcade",
+        "controlador": "ESP-01S",
+        "ip": "192.168.18.99",
+        "status": "OFFLINE",
+        "percentual_dg_tech": 100,
+        "percentual_proprietario": 100,
+        "percentual_parceiro": 0,
+        "preco_ficha": 2.50,
+        "ultimo_contato": None,
+        "ultimo_pulso": None,
+        "ultimo_comando": None,
+        "last_heartbeat_ts": 0.0
+    },
+    {
+        "id": "barbearia",
+        "nome": "Barbearia",
+        "estabelecimento": "Barbearia",
+        "proprietario": "DG Tech Arcade",
+        "controlador": "ESP32-CYD + ESP-01S",
+        "ip": "192.168.1.63",
+        "status": "OFFLINE",
+        "percentual_dg_tech": 70,
+        "percentual_proprietario": 70,
+        "percentual_parceiro": 30,
+        "preco_ficha": 2.50,
+        "ultimo_contato": None,
+        "ultimo_pulso": None,
+        "ultimo_comando": None,
+        "last_heartbeat_ts": 0.0
+    }
+]
+
 # Estado persistente do sistema
 data_lock = threading.Lock()
 sales_data = {
@@ -51,7 +88,14 @@ sales_data = {
     "general_tokens": 0,
     "general_cash": 0.0,
     "price_per_token": 2.50,
-    "barber_split_percent": 50,
+    "active_machine_id": "distribuidora",
+    "barber_split_percent": 0,
+    "owner_split_percent": 100,
+    "machines": [dict(m) for m in DEFAULT_MACHINES],
+    "technical_logs": [],
+    "executed_commands": {},
+    "pending_commands": [],
+    "last_confirmed_cmd": None,
     "security_pin": "1234",
     "require_pin": False,
     "mp_access_token": DEFAULT_MP_TOKEN,
@@ -63,6 +107,67 @@ sales_data = {
     "closed_quinzenas": [],
     "daily_sales": []
 }
+
+def get_active_machine_unlocked():
+    global sales_data
+    active_id = sales_data.get("active_machine_id", "distribuidora")
+    machines = sales_data.get("machines", [])
+    found = None
+    for m in machines:
+        if m.get("id") == active_id:
+            found = m
+            break
+    if not found:
+        if machines:
+            found = machines[0]
+        else:
+            default_m = dict(DEFAULT_MACHINES[0])
+            sales_data["machines"] = [default_m]
+            sales_data["active_machine_id"] = "distribuidora"
+            found = default_m
+
+    p_dg = found.get("percentual_dg_tech", found.get("percentual_proprietario", 100))
+    p_pt = found.get("percentual_parceiro", 0)
+    found["percentual_dg_tech"] = p_dg
+    found["percentual_proprietario"] = p_dg
+    found["percentual_parceiro"] = p_pt
+    return found
+
+def get_active_machine():
+    with data_lock:
+        return get_active_machine_unlocked()
+
+def get_machine_by_id(machine_id):
+    with data_lock:
+        for m in sales_data.get("machines", []):
+            if m.get("id") == machine_id:
+                return m
+        return None
+
+def add_technical_log(cmd_id, maquina, fichas, modo, resultado, contabilizado, resposta_controlador="", detalhes=""):
+    with data_lock:
+        if "technical_logs" not in sales_data:
+            sales_data["technical_logs"] = []
+        now_br = datetime.now(BRAZIL_TZ)
+        log_entry = {
+            "id": len(sales_data["technical_logs"]) + 1,
+            "cmd_id": str(cmd_id),
+            "timestamp": now_br.timestamp(),
+            "data": now_br.strftime("%d/%m/%Y"),
+            "hora": now_br.strftime("%H:%M:%S"),
+            "maquina": str(maquina),
+            "fichas": int(fichas),
+            "modo": str(modo),
+            "resultado": str(resultado),
+            "contabilizado": bool(contabilizado),
+            "resposta_controlador": str(resposta_controlador)[:150],
+            "detalhes": str(detalhes)[:200]
+        }
+        sales_data["technical_logs"].append(log_entry)
+        if len(sales_data["technical_logs"]) > 500:
+            sales_data["technical_logs"] = sales_data["technical_logs"][-500:]
+        save_data()
+        return log_entry
 
 def recalculate_totals_unlocked():
     """Recalcula de forma blindada todos os totais da sessão, fechamentos e faturamento diário."""
@@ -181,7 +286,13 @@ def recalculate_totals_unlocked():
 
     existing_signatures = {(float(r.get("timestamp", 0)), float(r.get("valor", 0))) for r in sales_data["closed_registers"]}
     existing_event_ids = {r.get("event_id") for r in sales_data["closed_registers"] if r.get("event_id")}
-    split_pct = float(sales_data.get("barber_split_percent", 50))
+    
+    active_m = get_active_machine_unlocked()
+    partner_pct = float(active_m.get("percentual_parceiro", 0))
+    owner_pct = float(active_m.get("percentual_proprietario", 100))
+    sales_data["barber_split_percent"] = int(partner_pct)
+    sales_data["owner_split_percent"] = int(owner_pct)
+    split_pct = partner_pct
 
     for evt in events:
         if evt.get("tipo") == "sangria":
@@ -189,8 +300,14 @@ def recalculate_totals_unlocked():
             eid = evt.get("id")
             if eid not in existing_event_ids and sig not in existing_signatures:
                 v = float(evt.get("valor", 0.0))
-                b_val = round(float(evt.get("repasse_barbearia", (v * split_pct) / 100.0)), 2)
-                o_val = round(float(evt.get("lucro_proprietario", v - b_val)), 2)
+                if "repasse_estabelecimento" in evt or "repasse_barbearia" in evt:
+                    b_val = float(evt.get("repasse_estabelecimento", evt.get("repasse_barbearia", 0.0)))
+                    o_val = float(evt.get("lucro_proprietario", v - b_val))
+                    s_pct = int(evt.get("split_percent", partner_pct))
+                else:
+                    b_val = round((v * partner_pct) / 100.0, 2)
+                    o_val = round(v - b_val, 2)
+                    s_pct = int(partner_pct)
                 reg = {
                     "id": len(sales_data["closed_registers"]) + 1,
                     "event_id": eid,
@@ -202,8 +319,9 @@ def recalculate_totals_unlocked():
                     "responsavel": evt.get("responsavel", "Operador"),
                     "observacao": evt.get("observacao", ""),
                     "repasse_barbearia": b_val,
+                    "repasse_estabelecimento": b_val,
                     "lucro_proprietario": o_val,
-                    "split_percent": int(split_pct)
+                    "split_percent": s_pct
                 }
                 sales_data["closed_registers"].append(reg)
                 existing_signatures.add(sig)
@@ -223,8 +341,37 @@ def load_data():
                 # Garante chaves essenciais
                 if "processed_mp_ids" not in sales_data:
                     sales_data["processed_mp_ids"] = []
-                if "barber_split_percent" not in sales_data:
-                    sales_data["barber_split_percent"] = 50
+                if "machines" not in sales_data or not sales_data["machines"]:
+                    sales_data["machines"] = [dict(m) for m in DEFAULT_MACHINES]
+                if "active_machine_id" not in sales_data:
+                    sales_data["active_machine_id"] = "distribuidora"
+                
+                # Regra: Distribuidora 100% DG Tech Arcade, 0% Estabelecimento
+                for m in sales_data.get("machines", []):
+                    if m.get("id") == "distribuidora":
+                        m["nome"] = "Distribuidora"
+                        m["estabelecimento"] = "Distribuidora"
+                        m["proprietario"] = "DG Tech Arcade"
+                        m["percentual_proprietario"] = 100
+                        m["percentual_dg_tech"] = 100
+                        m["percentual_parceiro"] = 0
+                        if not m.get("ip"):
+                            m["ip"] = "192.168.18.99"
+                        if not m.get("controlador"):
+                            m["controlador"] = "ESP-01S"
+                
+                if sales_data.get("active_machine_id") == "distribuidora":
+                    sales_data["barber_split_percent"] = 0
+                    sales_data["owner_split_percent"] = 100
+                elif "barber_split_percent" not in sales_data:
+                    sales_data["barber_split_percent"] = 0
+
+                if "technical_logs" not in sales_data:
+                    sales_data["technical_logs"] = []
+                if "executed_commands" not in sales_data:
+                    sales_data["executed_commands"] = {}
+                if "pending_commands" not in sales_data:
+                    sales_data["pending_commands"] = []
                 if "closed_quinzenas" not in sales_data:
                     sales_data["closed_quinzenas"] = []
                 if "mp_access_token" not in sales_data or not sales_data["mp_access_token"]:
@@ -518,17 +665,24 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        # 1. API: Obter Status Financeiro, Barbearia & Contadores de Vendas
+        # 1. API: Obter Status Financeiro, Distribuidora/Máquinas & Contadores de Vendas
         if path == '/api/vendas/status':
             with data_lock:
                 recalculate_totals_unlocked()
+                active_m = get_active_machine_unlocked()
                 safe_copy = dict(sales_data)
+                safe_copy["active_machine"] = dict(active_m)
+                safe_copy["active_machine_id"] = active_m.get("id", "distribuidora")
+                safe_copy["machines"] = sales_data.get("machines", [])
                 safe_copy["pin_configured"] = bool(sales_data.get("security_pin"))
                 safe_copy["require_pin"] = sales_data.get("require_pin", False)
-                safe_copy["barber_split_percent"] = sales_data.get("barber_split_percent", 50)
+                safe_copy["barber_split_percent"] = active_m.get("percentual_parceiro", 0)
+                safe_copy["owner_split_percent"] = active_m.get("percentual_proprietario", 100)
                 safe_copy["config_updated_at"] = sales_data.get("config_updated_at", 0)
                 safe_copy["last_mp_sync"] = sales_data.get("last_mp_sync", "Nunca")
                 safe_copy["last_mp_status"] = sales_data.get("last_mp_status", "Online")
+                safe_copy["technical_logs"] = sales_data.get("technical_logs", [])[-50:]
+                safe_copy["last_confirmed_cmd"] = sales_data.get("last_confirmed_cmd")
                 # Não expor senhas e tokens reais
                 if "security_pin" in safe_copy:
                     del safe_copy["security_pin"]
@@ -561,23 +715,26 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
 
         # 4. API: Bridge Wi-Fi ESP-01S (Relé de Fichas) - Ping
         elif path == '/api/esp01/ping':
-            esp01_ip = query.get('ip', ['192.168.18.99'])[0]
+            active_m = get_active_machine()
+            esp01_ip = query.get('ip', [active_m.get('ip', '192.168.18.99')])[0]
             self.get_esp01_ping(esp01_ip)
             return
 
-        # 5. API: Bridge Wi-Fi ESP-01S - Disparo Remoto de Coin (Manutenção / Teste / Venda)
+        # 5. API: Bridge Wi-Fi ESP-01S - Disparo Remoto de Coin com Confirmação Real
         elif path == '/api/esp01/credito':
-            esp01_ip = query.get('ip', ['192.168.18.99'])[0]
+            active_m = get_active_machine()
+            esp01_ip = query.get('ip', [active_m.get('ip', '192.168.18.99')])[0]
             qtd = max(1, min(20, int(query.get('qtd', ['1'])[0])))
             modo = query.get('modo', ['manutencao'])[0]
             pin = query.get('pin', [''])[0] or self.headers.get('X-Pin', '')
             motivo = query.get('motivo', ['Disparo Remoto'])[0]
+            cmd_id = query.get('cmd_id', [''])[0]
 
             if not self.check_auth_pin(pin):
                 self.send_json(403, {"success": False, "error": "PIN de segurança incorreto. Acesso negado."})
                 return
 
-            self.get_esp01_credito(esp01_ip, qtd, modo, motivo)
+            self.get_esp01_credito(esp01_ip, qtd, modo, motivo, cmd_id)
             return
 
         # 6. API: Bridge Wi-Fi ESP32 CYD - Ping / Status
@@ -597,11 +754,13 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             since_id = int(query.get('since', [0])[0])
             with data_lock:
                 recalculate_totals_unlocked()
+                active_m = get_active_machine_unlocked()
                 events = [e for e in sales_data["events"] if e["id"] > since_id]
                 last_id = sales_data["events"][-1]["id"] if sales_data["events"] else 0
             self.send_json(200, {
                 "events": events,
                 "last_id": last_id,
+                "active_machine": active_m,
                 "session_cash": sales_data.get("session_cash", 0.0),
                 "session_tokens": sales_data.get("session_tokens", 0),
                 "today_cash": sales_data.get("today_cash", 0.0),
@@ -612,7 +771,8 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 "closed_registers": sales_data.get("closed_registers", []),
                 "closed_quinzenas": sales_data.get("closed_quinzenas", []),
                 "daily_sales": sales_data.get("daily_sales", []),
-                "last_sync": sales_data.get("last_mp_sync")
+                "last_sync": sales_data.get("last_mp_sync"),
+                "last_confirmed_cmd": sales_data.get("last_confirmed_cmd")
             })
             return
 
@@ -621,6 +781,61 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             with data_lock:
                 quinzenas = sales_data.get("closed_quinzenas", [])
             self.send_json(200, {"success": True, "closed_quinzenas": quinzenas})
+            return
+
+        # 10. API: Obter Histórico Técnico & Auditoria
+        elif path == '/api/technical_logs':
+            limit = int(query.get('limit', [100])[0])
+            with data_lock:
+                logs = list(sales_data.get("technical_logs", []))
+            logs = logs[-limit:]
+            logs.reverse()
+            self.send_json(200, {"success": True, "logs": logs})
+            return
+
+        # 11. API: Obter Lista de Máquinas
+        elif path == '/api/machines':
+            with data_lock:
+                machines = sales_data.get("machines", [])
+                active_id = sales_data.get("active_machine_id", "distribuidora")
+                active_m = get_active_machine_unlocked()
+            self.send_json(200, {
+                "success": True,
+                "active_machine_id": active_id,
+                "active_machine": active_m,
+                "machines": machines
+            })
+            return
+
+        # 12. API: Polling de Comandos pelo ESP-01S (Nuvem / Long-Polling)
+        elif path == '/api/esp01/poll':
+            with data_lock:
+                active_m = get_active_machine_unlocked()
+                now_br = datetime.now(BRAZIL_TZ)
+                time_str = now_br.strftime("%H:%M:%S")
+                active_m["last_heartbeat_ts"] = time.time()
+                active_m["status"] = "ONLINE"
+                active_m["ultimo_contato"] = time_str
+
+                pending_cmd = None
+                p_list = sales_data.get("pending_commands", [])
+                for cmd in p_list:
+                    if not cmd.get("confirmed"):
+                        pending_cmd = cmd
+                        break
+
+            if pending_cmd:
+                self.send_json(200, {
+                    "has_command": True,
+                    "cmd_id": pending_cmd["cmd_id"],
+                    "quantidade": pending_cmd["quantidade"]
+                })
+            else:
+                self.send_json(200, {
+                    "has_command": False,
+                    "status": "online",
+                    "time": time_str
+                })
             return
 
         # Arquivos estáticos normais (HTML, JS, CSS, PNG)
@@ -645,7 +860,7 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             self.post_config_pin()
             return
 
-        # 4. API: Salvar Configurações Gerais (Divisão Barbearia, Preço, PIN, MP Token)
+        # 4. API: Salvar Configurações Gerais (Divisão Barbearia/Distribuidora, Preço, PIN, MP Token)
         elif path == '/api/config/settings':
             self.post_config_settings()
             return
@@ -660,69 +875,271 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             self.post_fechar_quinzena()
             return
 
+        # 7. API: Selecionar Máquina Ativa
+        elif path == '/api/machines/select':
+            self.post_select_machine()
+            return
+
+        # 8. API: Configurações de Máquina Específica
+        elif path == '/api/machines/settings':
+            self.post_machine_settings()
+            return
+
+        # 9. API: Confirmação de Pulso enviada pelo ESP-01S (Nuvem / Polling)
+        elif path == '/api/esp01/confirm':
+            self.post_esp01_confirm()
+            return
+
+        # 10. API: Heartbeat enviado pelo ESP-01S
+        elif path == '/api/esp01/heartbeat':
+            self.post_esp01_heartbeat()
+            return
+
         self.send_json(404, {"error": "Rota não encontrada"})
 
     # --- BRIDGE ESP-01S (RELÉ COIN) ---
     def get_esp01_ping(self, ip):
+        active_m = get_active_machine()
+        online = False
+        data_resp = {}
+        now_br = datetime.now(BRAZIL_TZ)
+        time_str = now_br.strftime("%H:%M:%S")
+
         for route in ['/', '/ping', '/status']:
             try:
                 req = urllib.request.Request(f'http://{ip}{route}')
                 with urllib.request.urlopen(req, timeout=2.5) as resp:
                     raw = resp.read().decode('utf-8', errors='ignore')
                     try:
-                        data = json.loads(raw)
+                        data_resp = json.loads(raw)
                     except Exception:
-                        data = {"response": raw.strip()}
-                    self.send_json(200, {"online": True, "device": "ESP-01S", "role": "relay", "ip": ip, "data": data})
-                    return
+                        data_resp = {"response": raw.strip()}
+                    online = True
+                    break
             except urllib.error.HTTPError as he:
                 if he.code == 404:
                     continue
             except Exception:
                 pass
-        self.send_json(200, {"online": False, "error": "ESP-01S não respondeu no IP informado", "ip": ip})
 
-    def get_esp01_credito(self, ip, qtd=1, modo="manutencao", motivo="Disparo Remoto"):
-        try:
-            url = f'http://{ip}/credito?quantidade={qtd}'
-            req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                raw = resp.read().decode('utf-8', errors='ignore')
-                try:
-                    data = json.loads(raw)
-                except Exception:
-                    data = {"response": raw.strip()}
+        with data_lock:
+            # Também verifica se houve heartbeat recente do controlador via nuvem (< 25 segundos)
+            last_hb_ts = float(active_m.get("last_heartbeat_ts", 0))
+            if not online and (time.time() - last_hb_ts < 25):
+                online = True
+                data_resp = {"status": "online", "via": "cloud_heartbeat"}
 
-                with data_lock:
-                    price = sales_data.get("price_per_token", 2.50)
-                    valor_estimado = qtd * price
+            prev_status = active_m.get("status", "OFFLINE")
+            if online:
+                active_m["status"] = "ONLINE"
+                active_m["ultimo_contato"] = time_str
+                active_m["ip"] = ip
+                if prev_status != "ONLINE":
+                    add_technical_log("-", active_m.get("nome", "Distribuidora"), 0, "status", "ONLINE", False, "ESP-01S Respondeu", "ESP ONLINE NOVAMENTE")
+            else:
+                active_m["status"] = "OFFLINE"
+                if prev_status == "ONLINE":
+                    add_technical_log("-", active_m.get("nome", "Distribuidora"), 0, "status", "OFFLINE", False, "Sem resposta no IP", "ESP FICOU OFFLINE")
+            save_data()
 
-                    if modo == "venda":
-                        tipo_evento = "venda"
-                        desc = f"Venda Manual ({qtd} fichas - R$ {valor_estimado:.2f})"
-                    elif modo == "cortesia":
-                        tipo_evento = "cortesia"
-                        desc = f"Cortesia / Bônus ({qtd} fichas)"
-                        valor_estimado = 0.0
-                    else:
-                        tipo_evento = "manutencao"
-                        desc = f"Manutenção Técnica / Teste ({qtd} fichas)"
-                        valor_estimado = 0.0
+        if online:
+            self.send_json(200, {
+                "online": True,
+                "device": "ESP-01S",
+                "role": "relay",
+                "ip": ip,
+                "maquina": active_m.get("nome", "Distribuidora"),
+                "proprietario": active_m.get("proprietario", "DG Tech Arcade"),
+                "ultimo_contato": active_m.get("ultimo_contato", time_str),
+                "ultimo_pulso": active_m.get("ultimo_pulso", "Nenhum"),
+                "ultimo_comando": active_m.get("ultimo_comando", "Nenhum"),
+                "data": data_resp
+            })
+        else:
+            self.send_json(200, {
+                "online": False,
+                "device": "ESP-01S",
+                "ip": ip,
+                "maquina": active_m.get("nome", "Distribuidora"),
+                "proprietario": active_m.get("proprietario", "DG Tech Arcade"),
+                "ultimo_contato": active_m.get("ultimo_contato", "Nenhum registro"),
+                "ultimo_pulso": active_m.get("ultimo_pulso", "Nenhum"),
+                "ultimo_comando": active_m.get("ultimo_comando", "Nenhum"),
+                "error": "ESP-01S não respondeu no IP informado"
+            })
 
-                evt = add_event(tipo_evento, qtd, valor_estimado, desc, f"Celular 4G -> ESP-01S ({ip})")
-                print(f"[DISPARO RELÉ] {qtd} ficha(s) enviada(s) ao ESP-01S ({ip}) - Modo: {modo.upper()}")
+    def get_esp01_credito(self, ip, qtd=1, modo="manutencao", motivo="Disparo Remoto", cmd_id=None):
+        active_m = get_active_machine()
+        now_br = datetime.now(BRAZIL_TZ)
+        time_str = now_br.strftime("%H:%M:%S")
 
+        # 1. Garante identificador exclusivo por comando (Ex: CMD-20260925-00001)
+        if not cmd_id or not str(cmd_id).strip():
+            cmd_id = f"CMD-{now_br.strftime('%Y%m%d%H%M%S')}-{int(time.time()*1000)%1000:03d}"
+        cmd_id = str(cmd_id).strip()
+
+        # 2. Proteção contra pulso duplicado no backend
+        with data_lock:
+            if "executed_commands" not in sales_data:
+                sales_data["executed_commands"] = {}
+
+            if cmd_id in sales_data["executed_commands"]:
+                safe_print(f"[REPETIÇÃO BLOQUEADA] Comando {cmd_id} já executado anteriormente.")
+                add_technical_log(cmd_id, active_m.get("nome", "Distribuidora"), qtd, modo, "DUPLICADO_IGNORADO", False, "Comando já executado anteriormente", "Bloqueado para proteção contra créditos duplicados")
                 self.send_json(200, {
                     "success": True,
+                    "confirmed": True,
+                    "already_executed": True,
+                    "cmd_id": cmd_id,
                     "credits": qtd,
                     "modo": modo,
                     "ip": ip,
-                    "details": data,
-                    "event": evt
+                    "message": "Comando já executado anteriormente. Nenhum crédito duplicado gerado."
                 })
+                return
+
+        confirmed = False
+        already_executed_on_esp = False
+        resp_data = {}
+        error_msg = ""
+
+        # 3. Tentativa de disparo com comunicação direta na rede local
+        try:
+            url = f'http://{ip}/credito?quantidade={qtd}&cmd_id={urllib.parse.quote(cmd_id)}'
+            req = urllib.request.Request(url, headers={"User-Agent": "DG-Tech-Arcade-Server/2.0"})
+            with urllib.request.urlopen(req, timeout=6.0) as resp:
+                raw = resp.read().decode('utf-8', errors='ignore')
+                try:
+                    resp_data = json.loads(raw)
+                except Exception:
+                    resp_data = {"response": raw.strip()}
+
+                if resp_data.get("already_executed") is True:
+                    already_executed_on_esp = True
+                    confirmed = True
+                elif resp_data.get("success") is True or "creditos_liberados" in resp_data or resp_data.get("executed") is True:
+                    confirmed = True
+                else:
+                    error_msg = resp_data.get("error", "ESP-01S retornou falha na liberação dos pulsos")
         except Exception as e:
-            print(f"[DISPARO ERRO] Falha ao comunicar com ESP-01S ({ip}): {e}")
-            self.send_json(500, {"success": False, "error": str(e), "ip": ip})
+            error_msg = f"Falha de comunicação com ESP-01S ({ip}): {e}"
+            safe_print(f"[DISPARO DIRETO INACESSÍVEL] {cmd_id} -> {error_msg}")
+
+        # 4. Caso a chamada direta não alcance (ex: servidor na Nuvem/Render), coloca na fila pendente
+        if not confirmed and not error_msg.startswith("PIN"):
+            with data_lock:
+                if "pending_commands" not in sales_data:
+                    sales_data["pending_commands"] = []
+                sales_data["pending_commands"] = [c for c in sales_data["pending_commands"] if time.time() - c.get("ts", 0) < 30]
+                pending_cmd = {
+                    "cmd_id": cmd_id,
+                    "ip": ip,
+                    "quantidade": qtd,
+                    "modo": modo,
+                    "motivo": motivo,
+                    "ts": time.time(),
+                    "confirmed": False
+                }
+                sales_data["pending_commands"].append(pending_cmd)
+
+            # Aguarda até 3.5 segundos para o controlador consultar a fila via nuvem e confirmar
+            t_start = time.time()
+            while time.time() - t_start < 3.5:
+                time.sleep(0.4)
+                with data_lock:
+                    if cmd_id in sales_data.get("executed_commands", {}):
+                        confirmed = True
+                        break
+
+        # 5. AVALIAÇÃO RIGOROSA DA CONFIRMAÇÃO REAL
+        if confirmed:
+            with data_lock:
+                sales_data["executed_commands"][cmd_id] = time.time()
+                active_m["status"] = "ONLINE"
+                active_m["ultimo_contato"] = time_str
+                active_m["ultimo_pulso"] = time_str
+                active_m["ultimo_comando"] = cmd_id
+                sales_data["last_confirmed_cmd"] = {
+                    "cmd_id": cmd_id,
+                    "quantidade": qtd,
+                    "modo": modo,
+                    "hora": time_str,
+                    "maquina": active_m.get("nome", "Distribuidora")
+                }
+
+                price = float(active_m.get("preco_ficha", sales_data.get("price_per_token", 2.50)))
+                valor_estimado = qtd * price
+
+                if modo == "venda":
+                    tipo_evento = "venda"
+                    desc = f"Venda Manual: {qtd} ficha(s) (R$ {valor_estimado:.2f}) [{cmd_id}]"
+                elif modo == "cortesia":
+                    tipo_evento = "cortesia"
+                    desc = f"Cortesia / Bônus: {qtd} ficha(s) [{cmd_id}]"
+                    valor_estimado = 0.0
+                else:
+                    tipo_evento = "manutencao"
+                    desc = f"Manutenção Técnica / Teste: {qtd} pulso(s) [{cmd_id}]"
+                    valor_estimado = 0.0
+
+            # SOMENTE ADICIONA AO FATURAMENTO/CAIXA SE CONFIRMADO
+            evt = add_event(tipo_evento, qtd, valor_estimado, desc, f"Painel -> ESP-01S ({ip})", extra={
+                "cmd_id": cmd_id,
+                "maquina": active_m.get("nome", "Distribuidora"),
+                "controlador": "ESP-01S",
+                "confirmado": True
+            })
+
+            add_technical_log(
+                cmd_id=cmd_id,
+                maquina=active_m.get("nome", "Distribuidora"),
+                fichas=qtd,
+                modo=modo,
+                resultado="CONFIRMADO",
+                contabilizado=(modo == "venda"),
+                resposta_controlador="200 OK (ESP-01S)",
+                detalhes="Pulso físico executado e confirmado" if not already_executed_on_esp else "Comando já executado anteriormente"
+            )
+
+            safe_print(f"[DISPARO CONFIRMADO] {qtd} ficha(s) confirmada(s) pelo ESP-01S ({ip}) [{cmd_id}]")
+
+            self.send_json(200, {
+                "success": True,
+                "confirmed": True,
+                "cmd_id": cmd_id,
+                "credits": qtd,
+                "modo": modo,
+                "ip": ip,
+                "details": resp_data,
+                "event": evt
+            })
+            return
+        else:
+            # NÃO CONFIRMADO -> NÃO CONTABILIZAR!
+            with data_lock:
+                active_m["status"] = "OFFLINE"
+
+            add_technical_log(
+                cmd_id=cmd_id,
+                maquina=active_m.get("nome", "Distribuidora"),
+                fichas=qtd,
+                modo=modo,
+                resultado="FALHOU",
+                contabilizado=False,
+                resposta_controlador="ESP SEM RESPOSTA / TIMEOUT",
+                detalhes="Comando não confirmado pelo controlador. NÃO CONTABILIZADO."
+            )
+
+            safe_print(f"[DISPARO NÃO CONFIRMADO] {cmd_id} falhou. Nenhum crédito ou faturamento computado.")
+
+            self.send_json(200, {
+                "success": False,
+                "confirmed": False,
+                "cmd_id": cmd_id,
+                "error": error_msg or "Controlador ESP-01S não respondeu na rede local. Pulso NÃO executado.",
+                "status_controlador": "OFFLINE",
+                "contabilizado": False
+            })
 
     # --- BRIDGE ESP32 CYD ---
     def get_esp32_ping(self, ip):
@@ -767,24 +1184,30 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             responsavel = req_data.get("responsavel", "Operador")
             obs = req_data.get("observacao", "Fechamento de Caixa")
 
+            active_m = get_active_machine()
+            partner_pct = float(active_m.get("percentual_parceiro", 0))
+            owner_pct = float(active_m.get("percentual_proprietario", 100))
+
             with data_lock:
                 recalculate_totals_unlocked()
                 valor_sangria = sales_data.get("session_cash", 0.0)
                 fichas_sangria = sales_data.get("session_tokens", 0)
-                split = float(sales_data.get("barber_split_percent", 50)) / 100.0
-                barber_share = valor_sangria * split
-                owner_share = valor_sangria - barber_share
+                barber_share = round((valor_sangria * partner_pct) / 100.0, 2)
+                owner_share = round(valor_sangria - barber_share, 2)
 
-                desc_sangria = f"Sangria por {responsavel}. Total: R$ {valor_sangria:.2f} (Barbearia: R$ {barber_share:.2f} | Seu: R$ {owner_share:.2f}). Obs: {obs}"
+                desc_sangria = f"Sangria por {responsavel} no ponto {active_m.get('nome', 'Distribuidora')}. Total: R$ {valor_sangria:.2f} (DG Tech: R$ {owner_share:.2f} | Estabelecimento: R$ {barber_share:.2f}). Obs: {obs}"
                 extra_sangria = {
                     "responsavel": responsavel,
                     "observacao": obs,
-                    "repasse_barbearia": round(barber_share, 2),
-                    "lucro_proprietario": round(owner_share, 2)
+                    "maquina": active_m.get("nome", "Distribuidora"),
+                    "repasse_barbearia": barber_share,
+                    "repasse_estabelecimento": barber_share,
+                    "lucro_proprietario": owner_share,
+                    "split_percent": int(partner_pct)
                 }
 
                 evt = add_event("sangria", fichas_sangria, valor_sangria, desc_sangria, "Painel Gerencial", extra=extra_sangria)
-                print(f"[FECHAMENTO CAIXA] R$ {valor_sangria:.2f} recolhido por {responsavel} (Repasse Barbearia: R$ {barber_share:.2f})")
+                print(f"[FECHAMENTO CAIXA] R$ {valor_sangria:.2f} recolhido por {responsavel} (Ponto: {active_m.get('nome')} | DG Tech: R$ {owner_share:.2f} | Parceiro: R$ {barber_share:.2f})")
 
             self.send_json(200, {
                 "success": True,
@@ -816,7 +1239,10 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             data_fim = req_data.get("data_fim", "")
             valor_total = float(req_data.get("valor_total", 0.0))
             fichas = int(req_data.get("fichas", 0))
-            split_pct = float(req_data.get("split_percent", sales_data.get("barber_split_percent", 50)))
+
+            active_m = get_active_machine()
+            default_split = float(active_m.get("percentual_parceiro", 0))
+            split_pct = float(req_data.get("split_percent", default_split))
             barber_share = float(req_data.get("barber_share", (valor_total * split_pct) / 100.0))
             owner_share = float(req_data.get("owner_share", valor_total - barber_share))
             efetuar_sangria = bool(req_data.get("efetuar_sangria", False))
@@ -929,10 +1355,31 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             req_data = json.loads(raw_body) if raw_body else {}
 
             with data_lock:
-                if "barber_split_percent" in req_data:
-                    sales_data["barber_split_percent"] = max(0, min(100, int(req_data["barber_split_percent"])))
+                active_m = get_active_machine_unlocked()
+                if "machine_name" in req_data and str(req_data["machine_name"]).strip():
+                    active_m["nome"] = str(req_data["machine_name"]).strip()
+                    active_m["estabelecimento"] = str(req_data["machine_name"]).strip()
+                if "owner_name" in req_data and str(req_data["owner_name"]).strip():
+                    active_m["proprietario"] = str(req_data["owner_name"]).strip()
+                if "esp01_ip" in req_data and str(req_data["esp01_ip"]).strip():
+                    active_m["ip"] = str(req_data["esp01_ip"]).strip()
+
+                if "owner_split_percent" in req_data:
+                    active_m["percentual_proprietario"] = max(0, min(100, int(req_data["owner_split_percent"])))
+                    active_m["percentual_parceiro"] = 100 - active_m["percentual_proprietario"]
+                    sales_data["barber_split_percent"] = active_m["percentual_parceiro"]
+                    sales_data["owner_split_percent"] = active_m["percentual_proprietario"]
+                elif "barber_split_percent" in req_data:
+                    active_m["percentual_parceiro"] = max(0, min(100, int(req_data["barber_split_percent"])))
+                    active_m["percentual_proprietario"] = 100 - active_m["percentual_parceiro"]
+                    sales_data["barber_split_percent"] = active_m["percentual_parceiro"]
+                    sales_data["owner_split_percent"] = active_m["percentual_proprietario"]
+
                 if "price_per_token" in req_data:
-                    sales_data["price_per_token"] = max(0.50, float(req_data["price_per_token"]))
+                    p = max(0.50, float(req_data["price_per_token"]))
+                    sales_data["price_per_token"] = p
+                    active_m["preco_ficha"] = p
+
                 if "security_pin" in req_data and str(req_data["security_pin"]).strip():
                     sales_data["security_pin"] = str(req_data["security_pin"]).strip()
                 elif "pin" in req_data and str(req_data["pin"]).strip():
@@ -941,16 +1388,144 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                     sales_data["require_pin"] = bool(req_data["require_pin"])
                 if "mp_access_token" in req_data and str(req_data["mp_access_token"]).strip():
                     sales_data["mp_access_token"] = str(req_data["mp_access_token"]).strip()
+
                 sales_data["config_updated_at"] = time.time()
+                recalculate_totals_unlocked()
                 save_data()
 
             self.send_json(200, {
                 "success": True, 
                 "message": "Configurações salvas com sucesso",
-                "barber_split_percent": sales_data.get("barber_split_percent", 50),
+                "active_machine": active_m,
+                "barber_split_percent": active_m.get("percentual_parceiro", 0),
+                "owner_split_percent": active_m.get("percentual_proprietario", 100),
                 "price_per_token": sales_data.get("price_per_token", 2.50),
                 "config_updated_at": sales_data.get("config_updated_at", 0)
             })
+        except Exception as e:
+            self.send_json(500, {"success": False, "error": str(e)})
+
+    def post_select_machine(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw_body = self.rfile.read(length).decode('utf-8')
+            req_data = json.loads(raw_body) if raw_body else {}
+            machine_id = str(req_data.get("machine_id", "")).strip()
+
+            with data_lock:
+                found = False
+                for m in sales_data.get("machines", []):
+                    if m.get("id") == machine_id:
+                        sales_data["active_machine_id"] = machine_id
+                        found = True
+                        break
+                if not found:
+                    self.send_json(404, {"success": False, "error": "Máquina não encontrada"})
+                    return
+                recalculate_totals_unlocked()
+                save_data()
+                active_m = get_active_machine_unlocked()
+
+            self.send_json(200, {"success": True, "active_machine": active_m, "active_machine_id": machine_id})
+        except Exception as e:
+            self.send_json(500, {"success": False, "error": str(e)})
+
+    def post_machine_settings(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw_body = self.rfile.read(length).decode('utf-8')
+            req_data = json.loads(raw_body) if raw_body else {}
+            machine_id = str(req_data.get("machine_id", "")).strip()
+
+            with data_lock:
+                target_m = None
+                for m in sales_data.get("machines", []):
+                    if m.get("id") == machine_id or (not machine_id and m.get("id") == sales_data.get("active_machine_id")):
+                        target_m = m
+                        break
+                if not target_m:
+                    self.send_json(404, {"success": False, "error": "Máquina não encontrada"})
+                    return
+
+                if "nome" in req_data and str(req_data["nome"]).strip():
+                    target_m["nome"] = str(req_data["nome"]).strip()
+                if "proprietario" in req_data and str(req_data["proprietario"]).strip():
+                    target_m["proprietario"] = str(req_data["proprietario"]).strip()
+                if "estabelecimento" in req_data and str(req_data["estabelecimento"]).strip():
+                    target_m["estabelecimento"] = str(req_data["estabelecimento"]).strip()
+                if "percentual_proprietario" in req_data:
+                    target_m["percentual_proprietario"] = max(0, min(100, int(req_data["percentual_proprietario"])))
+                    target_m["percentual_parceiro"] = 100 - target_m["percentual_proprietario"]
+                elif "percentual_parceiro" in req_data:
+                    target_m["percentual_parceiro"] = max(0, min(100, int(req_data["percentual_parceiro"])))
+                    target_m["percentual_proprietario"] = 100 - target_m["percentual_parceiro"]
+                if "ip" in req_data and str(req_data["ip"]).strip():
+                    target_m["ip"] = str(req_data["ip"]).strip()
+                if "preco_ficha" in req_data:
+                    target_m["preco_ficha"] = max(0.50, float(req_data["preco_ficha"]))
+
+                recalculate_totals_unlocked()
+                save_data()
+
+            self.send_json(200, {"success": True, "machine": target_m})
+        except Exception as e:
+            self.send_json(500, {"success": False, "error": str(e)})
+
+    def post_esp01_confirm(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw_body = self.rfile.read(length).decode('utf-8')
+            req_data = json.loads(raw_body) if raw_body else {}
+            cmd_id = str(req_data.get("cmd_id", "")).strip()
+
+            if not cmd_id:
+                self.send_json(400, {"success": False, "error": "cmd_id não informado"})
+                return
+
+            with data_lock:
+                active_m = get_active_machine_unlocked()
+                now_br = datetime.now(BRAZIL_TZ)
+                time_str = now_br.strftime("%H:%M:%S")
+
+                active_m["last_heartbeat_ts"] = time.time()
+                active_m["status"] = "ONLINE"
+                active_m["ultimo_contato"] = time_str
+                active_m["ultimo_pulso"] = time_str
+                active_m["ultimo_comando"] = cmd_id
+
+                if "executed_commands" not in sales_data:
+                    sales_data["executed_commands"] = {}
+                sales_data["executed_commands"][cmd_id] = time.time()
+
+                for cmd in sales_data.get("pending_commands", []):
+                    if cmd.get("cmd_id") == cmd_id:
+                        cmd["confirmed"] = True
+
+                save_data()
+
+            add_technical_log(cmd_id, active_m.get("nome", "Distribuidora"), req_data.get("quantidade", 1), "nuvem", "CONFIRMADO", True, "200 OK (ESP Cloud)", "Confirmado via polling")
+            self.send_json(200, {"success": True, "cmd_id": cmd_id})
+        except Exception as e:
+            self.send_json(500, {"success": False, "error": str(e)})
+
+    def post_esp01_heartbeat(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw_body = self.rfile.read(length).decode('utf-8')
+            req_data = json.loads(raw_body) if raw_body else {}
+
+            with data_lock:
+                active_m = get_active_machine_unlocked()
+                now_br = datetime.now(BRAZIL_TZ)
+                time_str = now_br.strftime("%H:%M:%S")
+                active_m["last_heartbeat_ts"] = time.time()
+                active_m["status"] = "ONLINE"
+                active_m["ultimo_contato"] = time_str
+                if "ip" in req_data and req_data["ip"]:
+                    active_m["ip"] = str(req_data["ip"])
+                save_data()
+
+            self.send_json(200, {"success": True, "status": "online", "time": time_str})
         except Exception as e:
             self.send_json(500, {"success": False, "error": str(e)})
 

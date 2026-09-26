@@ -7,7 +7,9 @@
 const DG_STATE_KEY = 'DG_TECH_ARCADE_DATA_V4';
 
 const defaultState = {
-  machineName: 'DG ARCADE #01',
+  machineId: 'distribuidora',
+  machineName: 'Distribuidora',
+  machineOwner: 'DG Tech Arcade',
   tokenPrice: 2.50,
   soundEnabled: true,
   requireConfirm: false,
@@ -16,6 +18,10 @@ const defaultState = {
 
   // Conexão Wi-Fi com o Módulo Relé
   esp01Ip: '192.168.18.99',
+  esp01Status: 'OFFLINE',
+  esp01LastContact: 'Nenhum',
+  esp01LastPulse: 'Nenhum',
+  esp01LastCmd: 'Nenhum',
 
   // Seleção Atual do Operador
   selectedMode: 'manutencao', // 'manutencao', 'cortesia', 'venda'
@@ -32,8 +38,9 @@ const defaultState = {
   generalTokens: 0,
   generalCash: 0.00,
 
-  // Divisão com a Barbearia & Configurações
-  barberSplitPercent: 50,
+  // Divisão Financeira (100% DG Tech Arcade / 0% Ponto na Distribuidora)
+  ownerSplitPercent: 100,
+  barberSplitPercent: 0,
   configOverride: false,
   lastConfigSavedTs: 0,
   quinzenalResponsavel: 'Daniel',
@@ -53,8 +60,9 @@ const defaultState = {
   dailySales: [],
   quinzenalFilter: 'current_1',
 
-  // Lista de Eventos / Transações
-  events: []
+  // Lista de Eventos / Transações & Auditoria Técnica
+  events: [],
+  technicalLogs: []
 };
 
 let appState = { ...defaultState };
@@ -76,12 +84,20 @@ document.addEventListener('DOMContentLoaded', () => {
   // Sincroniza estado com o backend Python
   fetchServerStatus();
 
-  // Testa conectividade com o relé
+  // Sincroniza histórico técnico de comandos
+  fetchTechnicalLogs();
+
+  // Testa conectividade real com o relé
   pingEsp01(false);
   startAutoPing();
   startTelemetryPolling();
 
-  appendHardwareFeed('DG TECH ARCADE pronto para acionamento via 4G / Wi-Fi.');
+  document.getElementById('btnRefreshTechLogs')?.addEventListener('click', () => {
+    fetchTechnicalLogs();
+    showToast('🔄 Histórico técnico atualizado!');
+  });
+
+  appendHardwareFeed('DG TECH ARCADE pronto para acionamento com confirmação real.');
 });
 
 // Detecta a URL base da API (seja local, túnel Cloudflare ou 4G)
@@ -333,6 +349,12 @@ function loadLocalState() {
       if (parsed.esp01Ip === '192.168.1.62' || !parsed.esp01Ip) {
         parsed.esp01Ip = '192.168.18.99';
       }
+      if (parsed.machineName === 'DG ARCADE #01' || !parsed.machineName) {
+        parsed.machineName = 'Distribuidora';
+        parsed.machineOwner = 'DG Tech Arcade';
+        parsed.ownerSplitPercent = 100;
+        parsed.barberSplitPercent = 0;
+      }
       appState = { ...defaultState, ...parsed };
       recalculateStateTotals();
     }
@@ -387,13 +409,36 @@ async function fetchServerStatus() {
       if (s.general_tokens !== undefined) appState.generalTokens = s.general_tokens;
       if (s.general_cash !== undefined) appState.generalCash = s.general_cash;
 
+      // Dados da Máquina Ativa e Percentuais Financeiros Oficiais
+      if (s.active_machine) {
+        appState.machineId = s.active_machine.id || 'distribuidora';
+        appState.machineName = s.active_machine.nome || 'Distribuidora';
+        appState.machineOwner = s.active_machine.proprietario || 'DG Tech Arcade';
+        if (s.active_machine.percentual_dg_tech !== undefined) {
+          appState.ownerSplitPercent = s.active_machine.percentual_dg_tech;
+        }
+        if (s.active_machine.percentual_parceiro !== undefined) {
+          appState.barberSplitPercent = s.active_machine.percentual_parceiro;
+        }
+        if (s.active_machine.ip) {
+          appState.esp01Ip = s.active_machine.ip;
+        }
+      } else {
+        if (s.owner_split_percent !== undefined) appState.ownerSplitPercent = s.owner_split_percent;
+        if (s.barber_split_percent !== undefined) appState.barberSplitPercent = s.barber_split_percent;
+      }
+
+      // Telemetria do Controlador
+      if (s.last_confirmed_cmd) appState.esp01LastCmd = s.last_confirmed_cmd;
+      if (s.last_pulse) appState.esp01LastPulse = s.last_pulse;
+      if (s.last_contact) appState.esp01LastContact = s.last_contact;
+
       // Preserva configurações salvas localmente se o usuário customizou
       const serverConfigTs = (s.config_updated_at || 0) * 1000;
       const shouldUpdateConfig = !appState.configOverride || (serverConfigTs > (appState.lastConfigSavedTs || 0));
       if (shouldUpdateConfig) {
         if (s.price_per_token !== undefined) appState.tokenPrice = s.price_per_token;
         if (s.require_pin !== undefined) appState.requirePin = s.require_pin;
-        if (s.barber_split_percent !== undefined) appState.barberSplitPercent = s.barber_split_percent;
       }
 
       // Métricas Oficiais do Servidor (Fuso de Brasília)
@@ -410,6 +455,10 @@ async function fetchServerStatus() {
       }
       if (s.daily_sales && Array.isArray(s.daily_sales) && s.daily_sales.length > 0) {
         appState.dailySales = s.daily_sales;
+      }
+      if (s.technical_logs && Array.isArray(s.technical_logs)) {
+        appState.technicalLogs = s.technical_logs;
+        renderTechnicalLogs();
       }
 
       const mpText = document.getElementById('mpSyncText');
@@ -429,45 +478,97 @@ async function fetchServerStatus() {
 }
 
 // ==========================================================================
-// DISPARO DE COIN (MANUTENÇÃO / TESTE / VENDA)
+// IDENTIFICADOR ÚNICO DE COMANDO (PROTEÇÃO CONTRA DUPLICIDADE)
 // ==========================================================================
+function generateCommandId() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const h = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  const rnd = Math.floor(1000 + Math.random() * 9000);
+  return `CMD-${y}${m}${d}-${h}${min}${s}-${rnd}`;
+}
 
-// Acionamento físico direto do relé na rede local Wi-Fi (compatível com celulares em HTTPS)
-function triggerLocalRelayHardware(ip, qtd) {
-  try {
-    let form = document.getElementById('directRelayForm');
-    if (!form) {
-      form = document.createElement('form');
-      form.id = 'directRelayForm';
-      form.method = 'GET';
-      form.target = 'relayHiddenFrame';
-      form.style.display = 'none';
-      const input = document.createElement('input');
-      input.type = 'hidden';
-      input.name = 'quantidade';
-      input.id = 'relayHiddenQtd';
-      form.appendChild(input);
-      document.body.appendChild(form);
-    }
-    let iframe = document.getElementById('relayHiddenFrame');
-    if (!iframe) {
-      iframe = document.createElement('iframe');
-      iframe.name = 'relayHiddenFrame';
-      iframe.id = 'relayHiddenFrame';
-      iframe.style.display = 'none';
-      document.body.appendChild(iframe);
-    }
-    form.action = `http://${ip}/credito`;
-    document.getElementById('relayHiddenQtd').value = qtd;
-    form.submit();
-    return true;
-  } catch (e) {
-    console.warn('[RELAY HARDWARE TRIGGER]', e);
-    return false;
+function resetFireButton(btnFire, fireLabel, origLabel) {
+  if (btnFire) {
+    btnFire.classList.remove('btn-firing');
+    btnFire.disabled = false;
+  }
+  if (fireLabel && origLabel) {
+    fireLabel.textContent = origLabel;
   }
 }
 
-async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto') {
+// Sincroniza histórico técnico de comandos do ESP-01S
+async function fetchTechnicalLogs() {
+  try {
+    const resp = await fetch(`${getApiBase()}/api/technical_logs`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success && Array.isArray(data.logs)) {
+        appState.technicalLogs = data.logs;
+        renderTechnicalLogs();
+      }
+    }
+  } catch (e) {
+    // Falha silenciosa de polling
+  }
+}
+
+function renderTechnicalLogs() {
+  const tbody = document.getElementById('technicalAuditTableBody');
+  const badge = document.getElementById('techLogsCounterBadge');
+  const logs = appState.technicalLogs || [];
+
+  if (badge) {
+    badge.textContent = `${logs.length} registro${logs.length === 1 ? '' : 's'}`;
+  }
+  if (!tbody) return;
+
+  if (logs.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted py-4" style="text-align:center; color:#7a8fa6; padding:1.2rem;">Nenhum comando técnico registrado ainda.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = logs.slice(0, 100).map(l => {
+    let resultColor = '#00e5ff';
+    let resultBadgeClass = 'badge-manutencao';
+    if (l.resultado === 'CONFIRMADO') {
+      resultColor = '#22c55e';
+      resultBadgeClass = 'badge-venda';
+    } else if (l.resultado === 'DUPLICADO IGNORADO') {
+      resultColor = '#eab308';
+      resultBadgeClass = 'badge-cortesia';
+    } else if (l.resultado === 'FALHOU' || l.resultado === 'OFFLINE' || l.resultado === 'ESP SEM RESPOSTA') {
+      resultColor = '#ff1e42';
+      resultBadgeClass = 'badge-sangria';
+    }
+
+    const contabClass = l.contabilizado ? 'text-green' : 'text-muted';
+    const contabText = l.contabilizado ? '✅ SIM (Caixa)' : '❌ NÃO';
+
+    return `
+      <tr>
+        <td class="log-time"><strong>${escapeHtml(l.hora || '--:--')}</strong> <small class="text-muted">${escapeHtml(l.data || '')}</small></td>
+        <td style="color:#f1f5f9; font-weight:600;">${escapeHtml(l.maquina || 'Distribuidora')}</td>
+        <td class="log-tokens font-mono" style="color:#38bdf8;">${l.quantidade || 0} un</td>
+        <td class="font-mono" style="color:#00e5ff; font-size:0.8rem;">${escapeHtml(l.cmd_id || '—')}</td>
+        <td><span class="event-badge ${resultBadgeClass}" style="color:${resultColor}; border-color:${resultColor};">${escapeHtml(l.resultado || 'PENDENTE')}</span></td>
+        <td class="${contabClass}" style="font-weight:600; font-size:0.82rem;">${contabText}</td>
+        <td class="text-muted" style="font-size:0.8rem;">${escapeHtml(l.resposta_esp || l.detalhe || '—')}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ==========================================================================
+// DISPARO DE COIN COM CONFIRMAÇÃO REAL DO ESP-01S & PROTEÇÃO DUPLICIDADE
+// ==========================================================================
+
+async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto', existingCmdId = null) {
   if (isCoinFiring) {
     appendHardwareFeed('[SEGURANÇA] Disparo em processamento. Aguarde...');
     return false;
@@ -475,158 +576,199 @@ async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto') {
   isCoinFiring = true;
 
   const btnFire = document.getElementById('btnAuthorizeCoin');
+  const fireLabel = document.getElementById('fireBtnLabel');
+  const origLabel = fireLabel ? fireLabel.textContent : '';
   if (btnFire) {
     btnFire.classList.add('btn-firing');
     btnFire.disabled = true;
   }
+  if (fireLabel) {
+    fireLabel.textContent = 'ENVIANDO...';
+  }
 
   const ip = getEsp01Ip();
   const pin = getPin();
+  const cmdId = existingCmdId || generateCommandId();
 
-  appendHardwareFeed(`[ESP-01S] Disparando ${qtd} ficha(s) (Modo: ${modo.toUpperCase()}) para ${ip}...`);
+  appendHardwareFeed(`[ENVIANDO] ${cmdId}: ${qtd} ficha(s) (${modo.toUpperCase()}) para ${ip}...`);
 
-  let dispatched = false;
+  let confirmed = false;
+  let serverResponse = null;
   let backendEvent = null;
+  let errorMsg = '';
 
   try {
-    // 1. Tenta envio com o servidor backend (timeout rápido de 3.5s)
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-    const url = `${getApiBase()}/api/esp01/credito?ip=${encodeURIComponent(ip)}&qtd=${qtd}&modo=${modo}&motivo=${encodeURIComponent(motivo)}&pin=${encodeURIComponent(pin)}`;
+    const timeoutId = setTimeout(() => controller.abort(), 6500);
+    const url = `${getApiBase()}/api/esp01/credito?ip=${encodeURIComponent(ip)}&qtd=${qtd}&modo=${modo}&motivo=${encodeURIComponent(motivo)}&pin=${encodeURIComponent(pin)}&cmd_id=${encodeURIComponent(cmdId)}`;
     const resp = await fetch(url, { signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (resp.status === 403) {
       playBuzzerSound();
-      appendHardwareFeed(`[SEGURANÇA] PIN incorreto! Verifique o PIN de acesso.`);
+      appendHardwareFeed(`[SEGURANÇA] PIN incorreto! Verifique a senha.`);
       alert('PIN de segurança incorreto! Verifique a senha de acesso.');
-      if (btnFire) {
-        btnFire.classList.remove('btn-firing');
-        btnFire.disabled = false;
-      }
+      resetFireButton(btnFire, fireLabel, origLabel);
       isCoinFiring = false;
       return false;
     }
 
     if (resp.ok) {
       const data = await resp.json();
-      if (data.success) {
-        dispatched = true;
+      serverResponse = data;
+      if (data.confirmed === true) {
+        confirmed = true;
         backendEvent = data.event;
-        appendHardwareFeed(`[DISPARO OK] ${qtd} ficha(s) liberada(s) com sucesso via servidor!`);
+      } else {
+        errorMsg = data.error || (data.status === 'DUPLICATE' ? 'Comando já executado anteriormente' : 'Falha na resposta do controlador');
       }
+    } else {
+      errorMsg = `Erro HTTP ${resp.status}`;
     }
   } catch (err) {
-    // Normal se o servidor for na nuvem (Render) e não alcançar a rede interna local
+    errorMsg = err.name === 'AbortError' ? 'Tempo limite esgotado (timeout)' : formatNetworkError(err);
   }
 
-  // 2. APENAS se o servidor não realizou o disparo físico, dispara diretamente no relé local
-  if (!dispatched) {
-    appendHardwareFeed(`[DISPARO DIRETO] Acionando relé direto na rede Wi-Fi local (${ip})...`);
-    triggerLocalRelayHardware(ip, qtd);
-    dispatched = true;
-  }
+  // Se confirmado pelo controlador físico:
+  if (confirmed) {
+    playCoinSound();
+    triggerScreenFlash();
 
-  // Executa ações sonoras e visuais locais de confirmação
-  playCoinSound();
-  triggerScreenFlash();
+    const timeStr = new Date().toLocaleTimeString('pt-BR');
+    appState.esp01LastPulse = timeStr;
+    appState.esp01LastCmd = cmdId;
+    appState.esp01LastContact = timeStr;
+    appState.authorizedCoinsToday += qtd;
+    appState.lastCoinTime = timeStr;
 
-  appState.authorizedCoinsToday += qtd;
-  appState.lastCoinTime = new Date().toLocaleTimeString('pt-BR');
+    // Atualiza telemetry display
+    setText('hwLastPulseDisplay', timeStr);
+    setText('hwLastCmdDisplay', cmdId);
+    setText('hwLastContactDisplay', timeStr);
 
-  const now = new Date();
-  const event = backendEvent || {
-    id: Date.now(),
-    tipo: modo,
-    fichas: qtd,
-    valor: modo === 'venda' ? (qtd * appState.tokenPrice) : 0,
-    descricao: motivo || (modo === 'manutencao' ? 'Teste Técnico Wi-Fi' : (modo === 'cortesia' ? 'Cortesia Wi-Fi' : 'Venda Wi-Fi')),
-    origem: `Wi-Fi (${ip})`,
-    cliente: modo === 'manutencao' ? 'Técnico / Manutenção' : (modo === 'cortesia' ? 'Cortesia / Bônus' : 'Venda Local'),
-    timestamp: now.getTime() / 1000,
-    data: now.toLocaleDateString('pt-BR'),
-    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  };
+    const now = new Date();
+    const event = backendEvent || {
+      id: Date.now(),
+      tipo: modo,
+      fichas: qtd,
+      valor: modo === 'venda' ? (qtd * appState.tokenPrice) : 0,
+      descricao: `${motivo || 'Disparo Remoto'} [${cmdId}]`,
+      origem: `Wi-Fi (${ip})`,
+      cliente: modo === 'manutencao' ? 'Técnico / Manutenção' : (modo === 'cortesia' ? 'Cortesia / Bônus' : 'Venda Local'),
+      timestamp: now.getTime() / 1000,
+      data: now.toLocaleDateString('pt-BR'),
+      hora: timeStr,
+      cmd_id: cmdId
+    };
 
-  if (!appState.events.some(e => e.id === event.id)) {
-    appState.events.push(event);
-    appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
-    if (appState.events.length > 350) appState.events = appState.events.slice(-350);
-  }
+    if (!appState.events.some(e => e.id === event.id)) {
+      appState.events.push(event);
+      appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
+      if (appState.events.length > 350) appState.events = appState.events.slice(-350);
+    }
 
-  // Atualiza estado financeiro local
-  const valor = qtd * appState.tokenPrice;
-  if (modo === 'venda') {
-    appState.generalTokens += qtd;
-    appState.generalCash += valor;
-    appendHardwareFeed(`[VENDA SUCESSO] ${qtd} ficha(s) liberada(s) (R$ ${formatCurrency(valor)})!`);
-    showToast(`🪙 ${qtd} ficha(s) vendida(s) no relé!`);
-  } else if (modo === 'cortesia') {
-    appState.generalTokens += qtd;
-    appendHardwareFeed(`[CORTESIA SUCESSO] ${qtd} ficha(s) cortesia liberada(s)!`);
-    showToast(`🎁 ${qtd} ficha(s) cortesia liberada(s)!`);
+    const valor = qtd * appState.tokenPrice;
+    if (modo === 'venda') {
+      appState.generalTokens += qtd;
+      appState.generalCash += valor;
+      appendHardwareFeed(`[CONFIRMADO] ${cmdId}: ${qtd} ficha(s) liberada(s) (R$ ${formatCurrency(valor)})!`);
+      showToast(`🪙 ${qtd} ficha(s) CONFIRMADAS pelo controlador!`);
+    } else if (modo === 'cortesia') {
+      appState.generalTokens += qtd;
+      appendHardwareFeed(`[CONFIRMADO] ${cmdId}: ${qtd} cortesia(s) liberada(s)!`);
+      showToast(`🎁 ${qtd} cortesia(s) CONFIRMADAS!`);
+    } else {
+      appendHardwareFeed(`[CONFIRMADO] ${cmdId}: ${qtd} pulso(s) executado(s) no relé (${ip})!`);
+      showToast(`⚡ ${qtd} pulso(s) CONFIRMADO(S) no relé!`);
+    }
+
+    recalculateStateTotals();
+    saveLocalState();
+    renderAllData();
   } else {
-    appendHardwareFeed(`[MANUTENÇÃO SUCESSO] ${qtd} ficha(s) técnica(s) disparada(s) no relé (${ip})!`);
-    showToast(`⚡ ${qtd} pulso(s) disparado(s) no relé!`);
+    // FALHA OU CONTROLADOR OFFLINE — NÃO CONTABILIZAR!
+    playBuzzerSound();
+    const statusText = (serverResponse && serverResponse.status) ? serverResponse.status : 'FALHOU';
+
+    appendHardwareFeed(`[${statusText}] ${cmdId}: Não confirmado pelo ESP-01S (${errorMsg}) — NÃO CONTABILIZADO`);
+    showToast(`❌ ${statusText}: Pulso NÃO confirmado pelo controlador! Faturamento NÃO alterado.`);
+
+    // Atualiza status do badge se for falha de comunicação
+    const badge = document.getElementById('esp01StatusBadge');
+    const badgeText = document.getElementById('esp01StatusText');
+    if (statusText === 'OFFLINE' || errorMsg.includes('inacessível') || errorMsg.includes('tempo limite') || errorMsg.includes('timeout')) {
+      if (badge) badge.className = 'status-indicator offline';
+      if (badgeText) badgeText.textContent = 'OFFLINE';
+      appState.esp01Status = 'OFFLINE';
+      setText('hwLastContactDisplay', 'Falha de comunicação');
+    }
   }
 
-  recalculateStateTotals();
-  saveLocalState();
-  renderAllData();
+  // Atualiza logs técnicos após o disparo
+  fetchTechnicalLogs();
 
   setTimeout(() => {
+    resetFireButton(btnFire, fireLabel, origLabel);
     isCoinFiring = false;
-    if (btnFire) {
-      btnFire.classList.remove('btn-firing');
-      btnFire.disabled = false;
-    }
   }, 1200);
 
-  return true;
+  return confirmed;
 }
 
-// Testar conexão com o ESP-01S (Ping)
+// Testar conexão real com o ESP-01S (Ping)
 async function pingEsp01(silent = false) {
   const ip = getEsp01Ip();
-  if (!silent) appendHardwareFeed(`[ESP-01S] Verificando conexão no IP ${ip}...`);
+  if (!silent) appendHardwareFeed(`[ESP-01S] Verificando conexão real no IP ${ip}...`);
 
   const badge = document.getElementById('esp01StatusBadge');
   const text = document.getElementById('esp01StatusText');
 
   try {
-    const resp = await fetch(`${getApiBase()}/api/esp01/ping?ip=${encodeURIComponent(ip)}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+    const resp = await fetch(`${getApiBase()}/api/esp01/ping?ip=${encodeURIComponent(ip)}`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
     if (resp.ok) {
       const data = await resp.json();
       if (data.online) {
         if (badge) badge.className = 'status-indicator online';
         if (text) text.textContent = 'ONLINE';
+        appState.esp01Status = 'ONLINE';
+
+        const contactTime = data.last_contact || new Date().toLocaleTimeString('pt-BR');
+        appState.esp01LastContact = contactTime;
+        setText('hwLastContactDisplay', contactTime);
+
+        if (data.last_cmd_id && data.last_cmd_id !== 'none') {
+          appState.esp01LastCmd = data.last_cmd_id;
+          setText('hwLastCmdDisplay', data.last_cmd_id);
+        }
+
+        if (data.maquina) {
+          setText('hwMachineNameDisplay', data.maquina);
+        }
+
         if (!silent) {
           playCoinSound();
           appendHardwareFeed(`[ESP-01S OK] Módulo Relé ONLINE no IP ${ip}!`);
-          showToast(`📡 Relé ONLINE no IP ${ip}!`);
+          showToast(`🟢 Relé ONLINE no IP ${ip}!`);
         }
         return true;
       }
     }
   } catch (err) {}
 
-  // Se estiver acessando via Render/Nuvem (HTTPS), o servidor na nuvem não alcança o IP local,
-  // mas o celular no Wi-Fi alcança! Exibe indicador de Wi-Fi configurado
-  if (window.location.protocol === 'https:' || !getApiBase()) {
-    if (badge) badge.className = 'status-indicator online';
-    if (text) text.textContent = 'REDE WI-FI';
-    if (!silent) {
-      appendHardwareFeed(`[ESP-01S] Configurado para acionar ${ip} via Wi-Fi.`);
-      showToast(`📡 Módulo configurado para Wi-Fi (${ip})`);
-    }
-    return true;
-  }
-
+  // Sem confirmação real do controlador: OFFLINE (Nunca presume online)
   if (badge) badge.className = 'status-indicator offline';
   if (text) text.textContent = 'OFFLINE';
+  appState.esp01Status = 'OFFLINE';
+  setText('hwLastContactDisplay', 'Falha de comunicação');
+
   if (!silent) {
     playBuzzerSound();
-    appendHardwareFeed(`[ESP-01S] Sem resposta em ${ip}. Verifique a alimentação do relé.`);
+    appendHardwareFeed(`[ESP-01S OFFLINE] Sem resposta do controlador em ${ip}.`);
+    showToast(`🔴 Controlador OFFLINE no IP ${ip}!`);
   }
   return false;
 }
@@ -713,9 +855,10 @@ async function executeSangria(responsavel, observacao, shouldGenPdf = true) {
   const sessionEvents = getSessionEvents();
   const valorRecolhido = appState.sessionCash;
   const fichasFechadas = appState.sessionTokens;
-  const splitPercent = appState.barberSplitPercent ?? 50;
-  const barberValor = (valorRecolhido * splitPercent) / 100.0;
-  const ownerValor = valorRecolhido - barberValor;
+  const ownerPercent = appState.ownerSplitPercent !== undefined ? appState.ownerSplitPercent : 100;
+  const splitPercent = appState.barberSplitPercent !== undefined ? appState.barberSplitPercent : (100 - ownerPercent);
+  const barberValor = Math.round(((valorRecolhido * splitPercent) / 100.0) * 100) / 100;
+  const ownerValor = Math.round((valorRecolhido - barberValor) * 100) / 100;
   const now = new Date();
 
   let serverEvent = null;
@@ -899,19 +1042,33 @@ function renderAllData() {
   // Renderiza Central de Fechamento Quinzenal (15 Dias)
   renderQuinzenalSection();
 
-  // Divisão Financeira da Barbearia
-  const splitPercent = appState.barberSplitPercent ?? 50;
-  const barberVal = (appState.sessionCash * splitPercent) / 100.0;
-  const ownerVal = appState.sessionCash - barberVal;
+  // Divisão Financeira por Máquina (100% DG Tech Arcade / 0% Estabelecimento na Distribuidora)
+  const ownerPercent = appState.ownerSplitPercent !== undefined ? appState.ownerSplitPercent : 100;
+  const partnerPercent = appState.barberSplitPercent !== undefined ? appState.barberSplitPercent : (100 - ownerPercent);
+  const partnerVal = Math.round(((appState.sessionCash * partnerPercent) / 100.0) * 100) / 100;
+  const ownerVal = Math.round((appState.sessionCash - partnerVal) * 100) / 100;
 
-  setText('barberSplitPercentDisplay', splitPercent);
-  setText('barberSplitValue', `R$ ${formatCurrency(barberVal)}`);
+  setText('barberSplitPercentDisplay', partnerPercent);
+  setText('barberSplitValue', `R$ ${formatCurrency(partnerVal)}`);
   setText('ownerSplitValue', `R$ ${formatCurrency(ownerVal)}`);
 
-  setText('sangriaBarberPercentLabel', splitPercent);
-  setText('sangriaOwnerPercentLabel', 100 - splitPercent);
-  setText('sangriaBarberAmount', `R$ ${formatCurrency(barberVal)}`);
+  setText('sangriaBarberPercentLabel', partnerPercent);
+  setText('sangriaOwnerPercentLabel', ownerPercent);
+  setText('sangriaBarberAmount', `R$ ${formatCurrency(partnerVal)}`);
   setText('sangriaOwnerAmount', `R$ ${formatCurrency(ownerVal)}`);
+
+  // Badge da Máquina Ativa no Topo
+  const machineBadge = document.getElementById('activeMachineBadge');
+  if (machineBadge) {
+    machineBadge.textContent = `${(appState.machineName || 'DISTRIBUIDORA').toUpperCase()} (${ownerPercent}% DG TECH)`;
+  }
+
+  // Telemetria do Hardware Console
+  setText('hwMachineNameDisplay', appState.machineName || 'Distribuidora');
+  setText('hwControllerIpDisplay', appState.esp01Ip || '192.168.18.99');
+  setText('hwLastContactDisplay', appState.esp01LastContact || 'Aguardando ping...');
+  setText('hwLastPulseDisplay', appState.esp01LastPulse || 'Nenhum');
+  setText('hwLastCmdDisplay', appState.esp01LastCmd || 'Nenhum comando ainda');
 
   const totalTrans = appState.events.length;
   setText('totalTransactionsCount', totalTrans);
@@ -2816,38 +2973,67 @@ function initEventListeners() {
 
   // 8. Modal de Configurações
   document.getElementById('settingsModalBtn')?.addEventListener('click', () => {
+    const nameEl = document.getElementById('settingsMachineName');
+    const ownerEl = document.getElementById('settingsMachineOwner');
+    const ownerSplitEl = document.getElementById('settingsOwnerSplit');
+    const splitEl = document.getElementById('settingsBarberSplit');
     const pinEl = document.getElementById('settingsPin');
     const ipEl = document.getElementById('settingsEsp01Ip');
     const priceEl = document.getElementById('inputTokenPrice');
     const soundEl = document.getElementById('inputSoundEnabled');
     const reqPinEl = document.getElementById('requirePinCheckbox');
-    const splitEl = document.getElementById('settingsBarberSplit');
 
+    if (nameEl) nameEl.value = appState.machineName || 'Distribuidora';
+    if (ownerEl) ownerEl.value = appState.machineOwner || 'DG Tech Arcade';
+    if (ownerSplitEl) ownerSplitEl.value = appState.ownerSplitPercent !== undefined ? appState.ownerSplitPercent : 100;
+    if (splitEl) splitEl.value = appState.barberSplitPercent !== undefined ? appState.barberSplitPercent : 0;
     if (pinEl) pinEl.value = appState.securityPin || '1234';
     if (ipEl) ipEl.value = appState.esp01Ip || '192.168.18.99';
     if (priceEl) priceEl.value = appState.tokenPrice || 2.50;
     if (soundEl) soundEl.checked = appState.soundEnabled;
     if (reqPinEl) reqPinEl.checked = appState.requirePin;
-    if (splitEl) splitEl.value = appState.barberSplitPercent ?? 50;
 
     openModal('settingsModal');
   });
 
+  // Sincroniza dinamicamente as porcentagens no modal quando o usuário edita
+  document.getElementById('settingsOwnerSplit')?.addEventListener('input', (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val >= 0 && val <= 100) {
+      const barberInput = document.getElementById('settingsBarberSplit');
+      if (barberInput) barberInput.value = 100 - val;
+    }
+  });
+
+  document.getElementById('settingsBarberSplit')?.addEventListener('input', (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val >= 0 && val <= 100) {
+      const ownerInput = document.getElementById('settingsOwnerSplit');
+      if (ownerInput) ownerInput.value = 100 - val;
+    }
+  });
+
   document.getElementById('btnCloseSettings')?.addEventListener('click', () => closeModal('settingsModal'));
   document.getElementById('btnSaveSettings')?.addEventListener('click', async () => {
+    const newName = (document.getElementById('settingsMachineName')?.value || 'Distribuidora').trim();
+    const newOwner = (document.getElementById('settingsMachineOwner')?.value || 'DG Tech Arcade').trim();
+    const newOwnerSplit = parseInt(document.getElementById('settingsOwnerSplit')?.value || '100', 10);
+    const newBarberSplit = parseInt(document.getElementById('settingsBarberSplit')?.value || '0', 10);
     const newPin = document.getElementById('settingsPin')?.value || '1234';
     const newIp = document.getElementById('settingsEsp01Ip')?.value || '192.168.18.99';
     const newPrice = parseFloat(document.getElementById('inputTokenPrice')?.value || '2.50');
     const newSound = document.getElementById('inputSoundEnabled')?.checked ?? true;
     const reqPin = document.getElementById('requirePinCheckbox')?.checked ?? false;
-    const newSplit = parseInt(document.getElementById('settingsBarberSplit')?.value || '50', 10);
 
+    appState.machineName = newName;
+    appState.machineOwner = newOwner;
+    appState.ownerSplitPercent = Math.max(0, Math.min(100, isNaN(newOwnerSplit) ? 100 : newOwnerSplit));
+    appState.barberSplitPercent = Math.max(0, Math.min(100, isNaN(newBarberSplit) ? 0 : newBarberSplit));
     appState.securityPin = newPin;
     appState.esp01Ip = newIp;
     appState.tokenPrice = newPrice;
     appState.soundEnabled = newSound;
     appState.requirePin = reqPin;
-    appState.barberSplitPercent = newSplit;
     appState.configOverride = true;
     appState.lastConfigSavedTs = Date.now();
 
@@ -2863,17 +3049,25 @@ function initEventListeners() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          nome: newName,
+          proprietario: newOwner,
+          percentual_dg_tech: appState.ownerSplitPercent,
+          percentual_parceiro: appState.barberSplitPercent,
+          owner_split_percent: appState.ownerSplitPercent,
+          barber_split_percent: appState.barberSplitPercent,
           pin: newPin,
           security_pin: newPin,
           require_pin: reqPin,
           price_per_token: newPrice,
-          barber_split_percent: newSplit
+          ip: newIp,
+          esp01_ip: newIp
         })
       });
     } catch (e) {}
 
-    appendHardwareFeed('[CONFIG] Configurações e divisão da barbearia salvas.');
+    appendHardwareFeed(`[CONFIG] Máquina '${newName}' configurada (${appState.ownerSplitPercent}% DG Tech / ${appState.barberSplitPercent}% Ponto).`);
     showToast('⚙️ Configurações salvas com sucesso!');
+    recalculateStateTotals();
     renderAllData();
   });
 
