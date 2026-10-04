@@ -120,7 +120,14 @@ function formatNetworkError(err) {
 
 function getEsp01Ip() {
   const el = document.getElementById('esp01IpInput') || document.getElementById('settingsEsp01Ip');
-  return (el?.value || appState.esp01Ip || '192.168.18.99').trim();
+  let val = (el?.value || appState.esp01Ip || '192.168.18.99').trim();
+  if (val === '192.168.10.99' || val === '192.168.1.62' || !val) {
+    val = '192.168.18.99';
+    if (el) el.value = val;
+    appState.esp01Ip = val;
+    saveLocalState();
+  }
+  return val;
 }
 
 function getPin() {
@@ -348,6 +355,7 @@ function loadLocalState() {
       const parsed = JSON.parse(saved);
       if (['192.168.1.62', '192.168.10.99'].includes(parsed.esp01Ip) || !parsed.esp01Ip) {
         parsed.esp01Ip = '192.168.18.99';
+        try { localStorage.setItem(DG_STATE_KEY, JSON.stringify(parsed)); } catch (e) {}
       }
       if (parsed.machineName === 'DG ARCADE #01' || !parsed.machineName) {
         parsed.machineName = 'Distribuidora';
@@ -492,13 +500,16 @@ function generateCommandId() {
   return `CMD-${y}${m}${d}-${h}${min}${s}-${rnd}`;
 }
 
-function resetFireButton(btnFire, fireLabel, origLabel) {
+function resetFireButton(btnFire, fireLabel, origLabel, fireSubLabel, origSub) {
   if (btnFire) {
     btnFire.classList.remove('btn-firing');
     btnFire.disabled = false;
   }
   if (fireLabel && origLabel) {
     fireLabel.textContent = origLabel;
+  }
+  if (fireSubLabel && origSub) {
+    fireSubLabel.textContent = origSub;
   }
 }
 
@@ -577,60 +588,102 @@ async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto', existingCmdId
 
   const btnFire = document.getElementById('btnAuthorizeCoin');
   const fireLabel = document.getElementById('fireBtnLabel');
+  const fireSubLabel = document.getElementById('fireBtnSubLabel');
   const origLabel = fireLabel ? fireLabel.textContent : '';
+  const origSub = fireSubLabel ? fireSubLabel.textContent : '';
+
   if (btnFire) {
     btnFire.classList.add('btn-firing');
     btnFire.disabled = true;
   }
-  if (fireLabel) {
-    fireLabel.textContent = 'ENVIANDO...';
-  }
+
+  // 1. ESTADO: ENVIANDO...
+  if (fireLabel) fireLabel.textContent = 'ENVIANDO...';
+  if (fireSubLabel) fireSubLabel.textContent = 'Enfileirando comando no servidor...';
 
   const ip = getEsp01Ip();
   const pin = getPin();
   const cmdId = existingCmdId || generateCommandId();
 
-  appendHardwareFeed(`[ENVIANDO] ${cmdId}: ${qtd} ficha(s) (${modo.toUpperCase()}) para ${ip}...`);
+  appendHardwareFeed(`[PENDENTE] ${cmdId}: ${qtd} ficha(s) (${modo.toUpperCase()}) enfileirado(s)...`);
 
   let confirmed = false;
-  let serverResponse = null;
-  let backendEvent = null;
   let errorMsg = '';
+  let commandReceivedByEsp = false;
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6500);
-    const url = `${getApiBase()}/api/esp01/credito?ip=${encodeURIComponent(ip)}&qtd=${qtd}&modo=${modo}&motivo=${encodeURIComponent(motivo)}&pin=${encodeURIComponent(pin)}&cmd_id=${encodeURIComponent(cmdId)}`;
-    const resp = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeoutId);
+    // Envia requisição para criar o comando na fila do servidor
+    const queueUrl = `${getApiBase()}/api/esp01/credito?ip=${encodeURIComponent(ip)}&qtd=${qtd}&modo=${modo}&motivo=${encodeURIComponent(motivo)}&pin=${encodeURIComponent(pin)}&cmd_id=${encodeURIComponent(cmdId)}&async=1`;
+    const queueResp = await fetch(queueUrl);
 
-    if (resp.status === 403) {
+    if (queueResp.status === 403) {
       playBuzzerSound();
       appendHardwareFeed(`[SEGURANÇA] PIN incorreto! Verifique a senha.`);
       alert('PIN de segurança incorreto! Verifique a senha de acesso.');
-      resetFireButton(btnFire, fireLabel, origLabel);
+      resetFireButton(btnFire, fireLabel, origLabel, fireSubLabel, origSub);
       isCoinFiring = false;
       return false;
     }
 
-    if (resp.ok) {
-      const data = await resp.json();
-      serverResponse = data;
-      if (data.confirmed === true) {
-        confirmed = true;
-        backendEvent = data.event;
-      } else {
-        errorMsg = data.error || (data.status === 'DUPLICATE' ? 'Comando já executado anteriormente' : 'Falha na resposta do controlador');
-      }
-    } else {
-      errorMsg = `Erro HTTP ${resp.status}`;
+    if (!queueResp.ok) {
+      throw new Error(`Erro HTTP ${queueResp.status}`);
     }
+
+    const queueData = await queueResp.json();
+    if (queueData.already_executed) {
+      showToast('⚠️ Este comando já foi executado anteriormente!');
+      resetFireButton(btnFire, fireLabel, origLabel, fireSubLabel, origSub);
+      isCoinFiring = false;
+      return true;
+    }
+
+    // Polling do status do comando no servidor (máximo 14 segundos)
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < 14000) {
+      await new Promise(r => setTimeout(r, 350));
+
+      try {
+        const statusResp = await fetch(`${getApiBase()}/api/esp01/status_comando?cmd_id=${encodeURIComponent(cmdId)}`);
+        if (!statusResp.ok) continue;
+
+        const sData = await statusResp.json();
+
+        // 2. ESTADO: COMANDO RECEBIDO PELO CONTROLADOR
+        if (sData.status === 'ENVIADO' && !commandReceivedByEsp) {
+          commandReceivedByEsp = true;
+          if (fireLabel) fireLabel.textContent = 'COMANDO RECEBIDO PELO CONTROLADOR';
+          if (fireSubLabel) fireSubLabel.textContent = `ESP-01S executando ${qtd} pulso(s)...`;
+          appendHardwareFeed(`[CONTROLADOR] ${cmdId}: Comando recebido pelo controlador! Executando ${qtd} pulso(s)...`);
+        }
+
+        // 3. ESTADO: CONFIRMADO / EXECUTADO
+        if (sData.status === 'CONFIRMADO' || sData.confirmed === true) {
+          confirmed = true;
+          break;
+        }
+
+        if (sData.status === 'EXPIRADO' || sData.status === 'FALHA') {
+          errorMsg = 'Controlador não confirmou a execução a tempo.';
+          break;
+        }
+      } catch (errLoop) {
+        // Ignora pequenas oscilações de rede durante o polling
+      }
+    }
+
+    if (!confirmed && !errorMsg) {
+      errorMsg = 'Controlador não confirmou a execução a tempo.';
+    }
+
   } catch (err) {
-    errorMsg = err.name === 'AbortError' ? 'Tempo limite esgotado (timeout)' : formatNetworkError(err);
+    errorMsg = formatNetworkError(err);
   }
 
-  // Se confirmado pelo controlador físico:
+  // 4. AVALIAÇÃO FINAL (SOMENTE MARCA SUCESSO SE CONFIRMADO)
   if (confirmed) {
+    if (fireLabel) fireLabel.textContent = 'FICHA LIBERADA COM SUCESSO';
+    if (fireSubLabel) fireSubLabel.textContent = '✅ Pulso físico confirmado pelo relé!';
     playCoinSound();
     triggerScreenFlash();
 
@@ -641,134 +694,134 @@ async function fireCoinPulse(qtd, modo, motivo = 'Disparo Remoto', existingCmdId
     appState.authorizedCoinsToday += qtd;
     appState.lastCoinTime = timeStr;
 
-    // Atualiza telemetry display
     setText('hwLastPulseDisplay', timeStr);
     setText('hwLastCmdDisplay', cmdId);
     setText('hwLastContactDisplay', timeStr);
 
-    const now = new Date();
-    const event = backendEvent || {
-      id: Date.now(),
-      tipo: modo,
-      fichas: qtd,
-      valor: modo === 'venda' ? (qtd * appState.tokenPrice) : 0,
-      descricao: `${motivo || 'Disparo Remoto'} [${cmdId}]`,
-      origem: `Wi-Fi (${ip})`,
-      cliente: modo === 'manutencao' ? 'Técnico / Manutenção' : (modo === 'cortesia' ? 'Cortesia / Bônus' : 'Venda Local'),
-      timestamp: now.getTime() / 1000,
-      data: now.toLocaleDateString('pt-BR'),
-      hora: timeStr,
-      cmd_id: cmdId
-    };
-
-    if (!appState.events.some(e => e.id === event.id)) {
-      appState.events.push(event);
-      appState.events.sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
-      if (appState.events.length > 350) appState.events = appState.events.slice(-350);
-    }
-
-    const valor = qtd * appState.tokenPrice;
+    const valor = modo === 'venda' ? (qtd * appState.tokenPrice) : 0;
     if (modo === 'venda') {
       appState.generalTokens += qtd;
       appState.generalCash += valor;
       appendHardwareFeed(`[CONFIRMADO] ${cmdId}: ${qtd} ficha(s) liberada(s) (R$ ${formatCurrency(valor)})!`);
-      showToast(`🪙 ${qtd} ficha(s) CONFIRMADAS pelo controlador!`);
+      showToast(`🪙 ${qtd} ficha(s) liberada(s) com sucesso!`);
     } else if (modo === 'cortesia') {
       appState.generalTokens += qtd;
       appendHardwareFeed(`[CONFIRMADO] ${cmdId}: ${qtd} cortesia(s) liberada(s)!`);
-      showToast(`🎁 ${qtd} cortesia(s) CONFIRMADAS!`);
+      showToast(`🎁 ${qtd} cortesia(s) liberada(s) com sucesso!`);
     } else {
       appendHardwareFeed(`[CONFIRMADO] ${cmdId}: ${qtd} pulso(s) executado(s) no relé (${ip})!`);
-      showToast(`⚡ ${qtd} pulso(s) CONFIRMADO(S) no relé!`);
+      showToast(`⚡ ${qtd} pulso(s) liberado(s) com sucesso!`);
     }
 
     recalculateStateTotals();
     saveLocalState();
     renderAllData();
   } else {
-    // FALHA OU CONTROLADOR OFFLINE — NÃO CONTABILIZAR!
+    // FALHA OU TIMEOUT — NÃO MARCAR SUCESSO, NÃO CONTABILIZAR!
     playBuzzerSound();
-    const statusText = (serverResponse && serverResponse.status) ? serverResponse.status : 'FALHOU';
-
-    appendHardwareFeed(`[${statusText}] ${cmdId}: Não confirmado pelo ESP-01S (${errorMsg}) — NÃO CONTABILIZADO`);
-    showToast(`❌ ${statusText}: Pulso NÃO confirmado pelo controlador! Faturamento NÃO alterado.`);
-
-    // Atualiza status do badge se for falha de comunicação
-    const badge = document.getElementById('esp01StatusBadge');
-    const badgeText = document.getElementById('esp01StatusText');
-    if (statusText === 'OFFLINE' || errorMsg.includes('inacessível') || errorMsg.includes('tempo limite') || errorMsg.includes('timeout')) {
-      if (badge) badge.className = 'status-indicator offline';
-      if (badgeText) badgeText.textContent = 'OFFLINE';
-      appState.esp01Status = 'OFFLINE';
-      setText('hwLastContactDisplay', 'Falha de comunicação');
-    }
+    if (fireLabel) fireLabel.textContent = 'FALHA NA EXECUÇÃO';
+    if (fireSubLabel) fireSubLabel.textContent = '❌ Controlador não confirmou';
+    appendHardwareFeed(`[FALHA] ${cmdId}: Controlador não confirmou a execução — NÃO CONTABILIZADO`);
+    showToast(`❌ Controlador não confirmou a execução.`);
   }
 
-  // Atualiza logs técnicos após o disparo
   fetchTechnicalLogs();
 
   setTimeout(() => {
-    resetFireButton(btnFire, fireLabel, origLabel);
+    resetFireButton(btnFire, fireLabel, origLabel, fireSubLabel, origSub);
     isCoinFiring = false;
-  }, 1200);
+  }, 2200);
 
   return confirmed;
 }
 
-// Testar conexão real com o ESP-01S (Ping)
+// Testar status real com o ESP-01S (Heartbeat / Ping)
 async function pingEsp01(silent = false) {
-  const ip = getEsp01Ip();
-  if (!silent) appendHardwareFeed(`[ESP-01S] Verificando conexão real no IP ${ip}...`);
-
   const badge = document.getElementById('esp01StatusBadge');
   const text = document.getElementById('esp01StatusText');
+  const contactEl = document.getElementById('hwLastContactDisplay');
+  const ipDisplayEl = document.getElementById('hwControllerIpDisplay');
+  const ipInput = document.getElementById('esp01IpInput');
+
+  if (!silent) appendHardwareFeed(`[ESP-01S] Verificando heartbeat recente do controlador...`);
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-    const resp = await fetch(`${getApiBase()}/api/esp01/ping?ip=${encodeURIComponent(ip)}`, { signal: controller.signal });
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const resp = await fetch(`${getApiBase()}/api/esp01/ping`, { signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (resp.ok) {
       const data = await resp.json();
-      if (data.online) {
-        if (badge) badge.className = 'status-indicator online';
-        if (text) text.textContent = 'ONLINE';
-        appState.esp01Status = 'ONLINE';
+      const isOnline = data.online === true;
+      appState.esp01Status = isOnline ? 'ONLINE' : 'OFFLINE';
 
-        const contactTime = data.last_contact || new Date().toLocaleTimeString('pt-BR');
-        appState.esp01LastContact = contactTime;
-        setText('hwLastContactDisplay', contactTime);
+      if (badge) badge.className = isOnline ? 'status-indicator online' : 'status-indicator offline';
+      if (text) text.textContent = isOnline ? 'ONLINE' : 'OFFLINE';
 
-        if (data.last_cmd_id && data.last_cmd_id !== 'none') {
-          appState.esp01LastCmd = data.last_cmd_id;
-          setText('hwLastCmdDisplay', data.last_cmd_id);
-        }
-
-        if (data.maquina) {
-          setText('hwMachineNameDisplay', data.maquina);
-        }
-
-        if (!silent) {
-          playCoinSound();
-          appendHardwareFeed(`[ESP-01S OK] Módulo Relé ONLINE no IP ${ip}!`);
-          showToast(`🟢 Relé ONLINE no IP ${ip}!`);
-        }
-        return true;
+      if (data.ip) {
+        let cleanIp = data.ip;
+        if (cleanIp === '192.168.10.99' || cleanIp === '192.168.1.62') cleanIp = '192.168.18.99';
+        appState.esp01Ip = cleanIp;
+        if (ipDisplayEl) ipDisplayEl.textContent = cleanIp;
+        if (ipInput && !document.activeElement?.isSameNode(ipInput)) ipInput.value = cleanIp;
       }
+
+      if (data.device) {
+        setText('hwControllerTypeDisplay', data.device);
+      }
+      if (data.ultimo_comando && data.ultimo_comando !== 'Nenhum') {
+        setText('hwLastCmdDisplay', data.ultimo_comando);
+        appState.esp01LastCmd = data.ultimo_comando;
+      }
+      if (data.ultimo_pulso && data.ultimo_pulso !== 'Nenhum') {
+        setText('hwLastPulseDisplay', data.ultimo_pulso);
+        appState.esp01LastPulse = data.ultimo_pulso;
+      }
+
+      if (contactEl) {
+        if (isOnline) {
+          const seg = data.segundos_atras !== undefined ? data.segundos_atras : 0;
+          contactEl.textContent = `ONLINE há ${seg}s (${data.ultimo_contato || 'Agora'})`;
+          contactEl.style.color = '#22c55e';
+        } else {
+          const seg = data.segundos_atras;
+          if (seg !== undefined && seg < 86400) {
+            contactEl.textContent = `Offline há ${seg}s (${data.ultimo_contato || 'Sem sinal'})`;
+          } else {
+            contactEl.textContent = 'OFFLINE (Aguardando heartbeat)';
+          }
+          contactEl.style.color = '#ff1e42';
+        }
+      }
+
+      if (!silent) {
+        if (isOnline) {
+          playCoinSound();
+          appendHardwareFeed(`[ESP-01S ONLINE] Heartbeat ativo no IP ${appState.esp01Ip} (${data.ultimo_contato}).`);
+          showToast(`🟢 Controlador ESP-01S ONLINE no IP ${appState.esp01Ip}!`);
+        } else {
+          playBuzzerSound();
+          appendHardwareFeed(`[ESP-01S OFFLINE] Sem heartbeat recente do controlador.`);
+          showToast(`🔴 Controlador ESP-01S OFFLINE! Sem heartbeat recente.`);
+        }
+      }
+      return isOnline;
     }
   } catch (err) {}
 
-  // Sem confirmação real do controlador: OFFLINE (Nunca presume online)
+  // Sem resposta do servidor
   if (badge) badge.className = 'status-indicator offline';
   if (text) text.textContent = 'OFFLINE';
   appState.esp01Status = 'OFFLINE';
-  setText('hwLastContactDisplay', 'Falha de comunicação');
-
+  if (contactEl) {
+    contactEl.textContent = 'Falha de comunicação com servidor';
+    contactEl.style.color = '#ff1e42';
+  }
   if (!silent) {
     playBuzzerSound();
-    appendHardwareFeed(`[ESP-01S OFFLINE] Sem resposta do controlador em ${ip}.`);
-    showToast(`🔴 Controlador OFFLINE no IP ${ip}!`);
+    appendHardwareFeed(`[ERRO] Não foi possível consultar o servidor.`);
+    showToast(`❌ Falha de comunicação com servidor`);
   }
   return false;
 }
@@ -832,6 +885,49 @@ function startTelemetryPolling() {
       if (data.last_sync) {
         const mpText = document.getElementById('mpSyncText');
         if (mpText) mpText.textContent = `BARBEARIA (${data.last_sync})`;
+      }
+
+      if (data.active_machine) {
+        const am = data.active_machine;
+        const nowSec = Date.now() / 1000;
+        const hbTs = Number(am.last_heartbeat_ts) || 0;
+        const diffSec = hbTs > 0 ? Math.floor(nowSec - hbTs) : 9999;
+        const isOnline = (diffSec <= 25) && (hbTs > 0);
+        appState.esp01Status = isOnline ? 'ONLINE' : 'OFFLINE';
+
+        const badge = document.getElementById('esp01StatusBadge');
+        const text = document.getElementById('esp01StatusText');
+        const contactEl = document.getElementById('hwLastContactDisplay');
+        const ipDisplayEl = document.getElementById('hwControllerIpDisplay');
+
+        if (badge) badge.className = isOnline ? 'status-indicator online' : 'status-indicator offline';
+        if (text) text.textContent = isOnline ? 'ONLINE' : 'OFFLINE';
+
+        if (contactEl && !isCoinFiring) {
+          if (isOnline) {
+            contactEl.textContent = `ONLINE há ${diffSec}s (${am.ultimo_contato || 'Agora'})`;
+            contactEl.style.color = '#22c55e';
+          } else {
+            contactEl.textContent = (diffSec < 86400 && hbTs > 0) ? `Offline há ${diffSec}s (${am.ultimo_contato || 'Sem sinal'})` : 'OFFLINE (Aguardando heartbeat)';
+            contactEl.style.color = '#ff1e42';
+          }
+        }
+
+        if (am.ip) {
+          let cleanIp = am.ip;
+          if (cleanIp === '192.168.10.99' || cleanIp === '192.168.1.62') cleanIp = '192.168.18.99';
+          appState.esp01Ip = cleanIp;
+          if (ipDisplayEl) ipDisplayEl.textContent = cleanIp;
+        }
+
+        if (am.ultimo_comando && am.ultimo_comando !== 'Nenhum') {
+          appState.esp01LastCmd = am.ultimo_comando;
+          setText('hwLastCmdDisplay', am.ultimo_comando);
+        }
+        if (am.ultimo_pulso && am.ultimo_pulso !== 'Nenhum') {
+          appState.esp01LastPulse = am.ultimo_pulso;
+          setText('hwLastPulseDisplay', am.ultimo_pulso);
+        }
       }
 
       recalculateStateTotals();
@@ -2852,16 +2948,22 @@ function initEventListeners() {
   // 5. Botões de Ping e Teste Rápido
   const ipInput = document.getElementById('esp01IpInput');
   if (ipInput) {
-    ipInput.value = appState.esp01Ip || '192.168.18.99';
+    let cleanIp = appState.esp01Ip || '192.168.18.99';
+    if (cleanIp === '192.168.10.99' || cleanIp === '192.168.1.62') cleanIp = '192.168.18.99';
+    appState.esp01Ip = cleanIp;
+    ipInput.value = cleanIp;
     ipInput.addEventListener('input', (e) => {
-      appState.esp01Ip = e.target.value.trim();
+      let val = e.target.value.trim();
+      if (val === '192.168.10.99' || val === '192.168.1.62') val = '192.168.18.99';
+      appState.esp01Ip = val;
       saveLocalState();
     });
   }
 
   document.getElementById('btnPingEsp01')?.addEventListener('click', () => pingEsp01(false));
   document.getElementById('btnPulse1Test')?.addEventListener('click', () => fireCoinPulse(1, 'manutencao', 'Teste Rápido 1 Ficha'));
-  document.getElementById('btnPulse2Test')?.addEventListener('click', () => fireCoinPulse(2, 'manutencao', 'Teste Rápido 2 Fichas'));
+  document.getElementById('btnPulse3Test')?.addEventListener('click', () => fireCoinPulse(3, 'manutencao', 'Teste Rápido 3 Fichas'));
+  document.getElementById('btnPulse7Test')?.addEventListener('click', () => fireCoinPulse(7, 'manutencao', 'Teste Rápido 7 Fichas'));
 
   // 6. Modal de Sangria / Fechamento de Caixa
   const openSangria = () => {

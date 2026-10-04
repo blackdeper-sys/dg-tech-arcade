@@ -78,7 +78,7 @@ DEFAULT_MACHINES = [
 ]
 
 # Estado persistente do sistema
-data_lock = threading.Lock()
+data_lock = threading.RLock()
 sales_data = {
     "session_cash": 0.0,
     "session_tokens": 0,
@@ -359,6 +359,8 @@ def load_data():
                             m["ip"] = "192.168.18.99"
                         if not m.get("controlador"):
                             m["controlador"] = "ESP-01S"
+                    elif m.get("ip") in ("192.168.10.99", "192.168.1.62"):
+                        m["ip"] = "192.168.18.99"
                 
                 if sales_data.get("active_machine_id") == "distribuidora":
                     sales_data["barber_split_percent"] = 0
@@ -729,12 +731,19 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             pin = query.get('pin', [''])[0] or self.headers.get('X-Pin', '')
             motivo = query.get('motivo', ['Disparo Remoto'])[0]
             cmd_id = query.get('cmd_id', [''])[0]
+            async_mode = query.get('async', ['0'])[0] in ('1', 'true', 'yes')
 
             if not self.check_auth_pin(pin):
                 self.send_json(403, {"success": False, "error": "PIN de segurança incorreto. Acesso negado."})
                 return
 
-            self.get_esp01_credito(esp01_ip, qtd, modo, motivo, cmd_id)
+            self.get_esp01_credito(esp01_ip, qtd, modo, motivo, cmd_id, async_mode)
+            return
+
+        # 5b. API: Status de Comando Específico para o Painel Web
+        elif path == '/api/esp01/status_comando':
+            cmd_id = query.get('cmd_id', [''])[0]
+            self.get_esp01_status_comando(cmd_id)
             return
 
         # 6. API: Bridge Wi-Fi ESP32 CYD - Ping / Status
@@ -755,6 +764,10 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             with data_lock:
                 recalculate_totals_unlocked()
                 active_m = get_active_machine_unlocked()
+                now_ts = time.time()
+                hb_ts = float(active_m.get("last_heartbeat_ts", 0))
+                diff_sec = int(now_ts - hb_ts) if hb_ts > 0 else 9999
+                active_m["status"] = "ONLINE" if (diff_sec <= 25 and hb_ts > 0) else "OFFLINE"
                 events = [e for e in sales_data["events"] if e["id"] > since_id]
                 last_id = sales_data["events"][-1]["id"] if sales_data["events"] else 0
             self.send_json(200, {
@@ -799,6 +812,9 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 machines = sales_data.get("machines", [])
                 active_id = sales_data.get("active_machine_id", "distribuidora")
                 active_m = get_active_machine_unlocked()
+                now_ts = time.time()
+                hb_ts = float(active_m.get("last_heartbeat_ts", 0))
+                active_m["status"] = "ONLINE" if (now_ts - hb_ts <= 25 and hb_ts > 0) else "OFFLINE"
             self.send_json(200, {
                 "success": True,
                 "active_machine_id": active_id,
@@ -807,24 +823,33 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        # 12. API: Polling de Comandos pelo ESP-01S (Nuvem / Long-Polling)
+        # 12. API: Polling de Comandos pelo ESP-01S (Nuvem / Polling)
         elif path == '/api/esp01/poll':
+            now_ts = time.time()
+            now_br = datetime.now(BRAZIL_TZ)
+            time_str = now_br.strftime("%H:%M:%S")
+
             with data_lock:
                 active_m = get_active_machine_unlocked()
-                now_br = datetime.now(BRAZIL_TZ)
-                time_str = now_br.strftime("%H:%M:%S")
-                active_m["last_heartbeat_ts"] = time.time()
+                active_m["last_heartbeat_ts"] = now_ts
                 active_m["status"] = "ONLINE"
                 active_m["ultimo_contato"] = time_str
 
                 pending_cmd = None
                 p_list = sales_data.get("pending_commands", [])
                 for cmd in p_list:
-                    if not cmd.get("confirmed"):
+                    c_status = cmd.get("status", "PENDENTE")
+                    if c_status == "PENDENTE":
                         pending_cmd = cmd
+                        cmd["status"] = "ENVIADO"
+                        cmd["fetched_at"] = now_ts
+                        save_data()
                         break
+                    elif c_status == "ENVIADO" and (now_ts - cmd.get("fetched_at", now_ts) > 20):
+                        cmd["status"] = "EXPIRADO"
 
             if pending_cmd:
+                safe_print(f"[POLL ESP-01S] Entregando comando {pending_cmd['cmd_id']} ({pending_cmd['quantidade']} ficha(s)) ao ESP-01S.")
                 self.send_json(200, {
                     "has_command": True,
                     "cmd_id": pending_cmd["cmd_id"],
@@ -832,9 +857,7 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 })
             else:
                 self.send_json(200, {
-                    "has_command": False,
-                    "status": "online",
-                    "time": time_str
+                    "has_command": False
                 })
             return
 
@@ -898,88 +921,108 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
         self.send_json(404, {"error": "Rota não encontrada"})
 
     # --- BRIDGE ESP-01S (RELÉ COIN) ---
-    def get_esp01_ping(self, ip):
-        active_m = get_active_machine()
-        online = False
-        data_resp = {}
-        now_br = datetime.now(BRAZIL_TZ)
-        time_str = now_br.strftime("%H:%M:%S")
+    def get_esp01_ping(self, ip=None):
+        now_ts = time.time()
+        with data_lock:
+            active_m = get_active_machine_unlocked()
+            last_hb_ts = float(active_m.get("last_heartbeat_ts", 0))
+            diff_sec = int(now_ts - last_hb_ts) if last_hb_ts > 0 else None
 
-        for route in ['/', '/ping', '/status']:
-            try:
-                req = urllib.request.Request(f'http://{ip}{route}')
-                with urllib.request.urlopen(req, timeout=2.5) as resp:
-                    raw = resp.read().decode('utf-8', errors='ignore')
-                    try:
-                        data_resp = json.loads(raw)
-                    except Exception:
-                        data_resp = {"response": raw.strip()}
-                    online = True
-                    break
-            except urllib.error.HTTPError as he:
-                if he.code == 404:
-                    continue
-            except Exception:
-                pass
+            # ONLINE se recebeu heartbeat nos últimos 25 segundos
+            online = (diff_sec is not None) and (diff_sec <= 25)
+            active_m["status"] = "ONLINE" if online else "OFFLINE"
+
+            # Sanitização rigorosa do IP para 192.168.18.99
+            cur_ip = active_m.get("ip", "192.168.18.99")
+            if cur_ip in ("192.168.10.99", "192.168.1.62") or not cur_ip:
+                cur_ip = "192.168.18.99"
+                active_m["ip"] = cur_ip
+
+            reported_device = active_m.get("device", "ESP-01S")
+            maquina_nome = active_m.get("nome", "Distribuidora")
+            proprietario = active_m.get("proprietario", "DG Tech Arcade")
+            ultimo_contato = active_m.get("ultimo_contato", "Nenhum registro")
+            ultimo_pulso = active_m.get("ultimo_pulso", "Nenhum")
+            ultimo_comando = active_m.get("ultimo_comando", "Nenhum")
+
+        self.send_json(200, {
+            "online": online,
+            "status": "ONLINE" if online else "OFFLINE",
+            "device": reported_device,
+            "role": "relay",
+            "ip": cur_ip,
+            "maquina": maquina_nome,
+            "proprietario": proprietario,
+            "ultimo_contato": ultimo_contato,
+            "segundos_atras": diff_sec if diff_sec is not None else 9999,
+            "ultimo_pulso": ultimo_pulso,
+            "ultimo_comando": ultimo_comando,
+            "last_heartbeat_ts": last_hb_ts
+        })
+
+    def get_esp01_status_comando(self, cmd_id):
+        cmd_id = str(cmd_id).strip()
+        if not cmd_id:
+            self.send_json(400, {"success": False, "error": "cmd_id não informado"})
+            return
 
         with data_lock:
-            # Também verifica se houve heartbeat recente do controlador via nuvem (< 25 segundos)
-            last_hb_ts = float(active_m.get("last_heartbeat_ts", 0))
-            if not online and (time.time() - last_hb_ts < 25):
-                online = True
-                data_resp = {"status": "online", "via": "cloud_heartbeat"}
+            now_ts = time.time()
+            # 1. Já confirmado no executed_commands?
+            if cmd_id in sales_data.get("executed_commands", {}):
+                last_c = sales_data.get("last_confirmed_cmd", {})
+                self.send_json(200, {
+                    "success": True,
+                    "cmd_id": cmd_id,
+                    "status": "CONFIRMADO",
+                    "confirmed": True,
+                    "executed": True,
+                    "hora": last_c.get("hora", "")
+                })
+                return
 
-            prev_status = active_m.get("status", "OFFLINE")
-            if online:
-                active_m["status"] = "ONLINE"
-                active_m["ultimo_contato"] = time_str
-                active_m["ip"] = ip
-                if prev_status != "ONLINE":
-                    add_technical_log("-", active_m.get("nome", "Distribuidora"), 0, "status", "ONLINE", False, "ESP-01S Respondeu", "ESP ONLINE NOVAMENTE")
-            else:
-                active_m["status"] = "OFFLINE"
-                if prev_status == "ONLINE":
-                    add_technical_log("-", active_m.get("nome", "Distribuidora"), 0, "status", "OFFLINE", False, "Sem resposta no IP", "ESP FICOU OFFLINE")
-            save_data()
+            # 2. Na fila de comandos pendentes?
+            for c in sales_data.get("pending_commands", []):
+                if c.get("cmd_id") == cmd_id:
+                    c_status = c.get("status", "PENDENTE")
+                    created_at = c.get("created_at", c.get("ts", now_ts))
+                    # Timeout de 20s
+                    if now_ts - created_at > 20 and c_status != "CONFIRMADO":
+                        c["status"] = "EXPIRADO"
+                        c_status = "EXPIRADO"
 
-        if online:
+                    self.send_json(200, {
+                        "success": True,
+                        "cmd_id": cmd_id,
+                        "status": c_status,
+                        "confirmed": (c_status == "CONFIRMADO"),
+                        "quantidade": c.get("quantidade", 1),
+                        "modo": c.get("modo", "manutencao"),
+                        "created_at": created_at,
+                        "fetched_at": c.get("fetched_at")
+                    })
+                    return
+
+            # 3. Não encontrado na fila nem no histórico
             self.send_json(200, {
-                "online": True,
-                "device": "ESP-01S",
-                "role": "relay",
-                "ip": ip,
-                "maquina": active_m.get("nome", "Distribuidora"),
-                "proprietario": active_m.get("proprietario", "DG Tech Arcade"),
-                "ultimo_contato": active_m.get("ultimo_contato", time_str),
-                "ultimo_pulso": active_m.get("ultimo_pulso", "Nenhum"),
-                "ultimo_comando": active_m.get("ultimo_comando", "Nenhum"),
-                "data": data_resp
-            })
-        else:
-            self.send_json(200, {
-                "online": False,
-                "device": "ESP-01S",
-                "ip": ip,
-                "maquina": active_m.get("nome", "Distribuidora"),
-                "proprietario": active_m.get("proprietario", "DG Tech Arcade"),
-                "ultimo_contato": active_m.get("ultimo_contato", "Nenhum registro"),
-                "ultimo_pulso": active_m.get("ultimo_pulso", "Nenhum"),
-                "ultimo_comando": active_m.get("ultimo_comando", "Nenhum"),
-                "error": "ESP-01S não respondeu no IP informado"
+                "success": False,
+                "cmd_id": cmd_id,
+                "status": "NAO_ENCONTRADO",
+                "confirmed": False
             })
 
-    def get_esp01_credito(self, ip, qtd=1, modo="manutencao", motivo="Disparo Remoto", cmd_id=None):
-        active_m = get_active_machine()
+    def get_esp01_credito(self, ip, qtd=1, modo="manutencao", motivo="Disparo Remoto", cmd_id=None, async_mode=False):
         now_br = datetime.now(BRAZIL_TZ)
         time_str = now_br.strftime("%H:%M:%S")
 
-        # 1. Garante identificador exclusivo por comando (Ex: CMD-20260925-00001)
+        # 1. Garante identificador exclusivo por comando
         if not cmd_id or not str(cmd_id).strip():
-            cmd_id = f"CMD-{now_br.strftime('%Y%m%d%H%M%S')}-{int(time.time()*1000)%1000:03d}"
+            cmd_id = f"CMD-{now_br.strftime('%Y%m%d%H%M%S')}-{int(time.time()*1000)%10000:04d}"
         cmd_id = str(cmd_id).strip()
 
         # 2. Proteção contra pulso duplicado no backend
         with data_lock:
+            active_m = get_active_machine_unlocked()
             if "executed_commands" not in sales_data:
                 sales_data["executed_commands"] = {}
 
@@ -990,6 +1033,7 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                     "success": True,
                     "confirmed": True,
                     "already_executed": True,
+                    "status": "CONFIRMADO",
                     "cmd_id": cmd_id,
                     "credits": qtd,
                     "modo": modo,
@@ -998,126 +1042,83 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
+            # 3. Enfileira o comando para polling pelo ESP-01S
+            if "pending_commands" not in sales_data:
+                sales_data["pending_commands"] = []
+
+            # Limpa comandos antigos (> 60s) que já expiraram
+            now_ts = time.time()
+            sales_data["pending_commands"] = [
+                c for c in sales_data["pending_commands"]
+                if (now_ts - c.get("created_at", c.get("ts", now_ts)) < 60) and (c.get("status") not in ("CONFIRMADO", "EXPIRADO", "FALHA"))
+            ]
+
+            # Adiciona o novo comando na fila com estado PENDENTE
+            pending_cmd = {
+                "cmd_id": cmd_id,
+                "ip": ip,
+                "quantidade": qtd,
+                "modo": modo,
+                "motivo": motivo,
+                "created_at": now_ts,
+                "ts": now_ts,
+                "fetched_at": None,
+                "status": "PENDENTE",
+                "confirmed": False
+            }
+            sales_data["pending_commands"].append(pending_cmd)
+            save_data()
+
+        safe_print(f"[FILA COMANDOS] Comando {cmd_id} enfileirado: {qtd} ficha(s), modo {modo}.")
+
+        # Se solicitado modo assíncrono (painel web moderno), responde imediatamente
+        if async_mode:
+            self.send_json(200, {
+                "success": True,
+                "status": "PENDENTE",
+                "cmd_id": cmd_id,
+                "quantidade": qtd,
+                "modo": modo,
+                "message": "Comando enfileirado com sucesso. Aguardando ESP-01S."
+            })
+            return
+
+        # Modo síncrono (aguarda até 12 segundos pela confirmação do ESP-01S via nuvem)
         confirmed = False
-        already_executed_on_esp = False
-        resp_data = {}
-        error_msg = ""
-
-        # 3. Tentativa de disparo com comunicação direta na rede local
-        try:
-            url = f'http://{ip}/credito?quantidade={qtd}&cmd_id={urllib.parse.quote(cmd_id)}'
-            req = urllib.request.Request(url, headers={"User-Agent": "DG-Tech-Arcade-Server/2.0"})
-            with urllib.request.urlopen(req, timeout=6.0) as resp:
-                raw = resp.read().decode('utf-8', errors='ignore')
-                try:
-                    resp_data = json.loads(raw)
-                except Exception:
-                    resp_data = {"response": raw.strip()}
-
-                if resp_data.get("already_executed") is True:
-                    already_executed_on_esp = True
-                    confirmed = True
-                elif resp_data.get("success") is True or "creditos_liberados" in resp_data or resp_data.get("executed") is True:
-                    confirmed = True
-                else:
-                    error_msg = resp_data.get("error", "ESP-01S retornou falha na liberação dos pulsos")
-        except Exception as e:
-            error_msg = f"Falha de comunicação com ESP-01S ({ip}): {e}"
-            safe_print(f"[DISPARO DIRETO INACESSÍVEL] {cmd_id} -> {error_msg}")
-
-        # 4. Caso a chamada direta não alcance (ex: servidor na Nuvem/Render), coloca na fila pendente
-        if not confirmed and not error_msg.startswith("PIN"):
+        t_start = time.time()
+        while time.time() - t_start < 12.0:
+            time.sleep(0.25)
             with data_lock:
-                if "pending_commands" not in sales_data:
-                    sales_data["pending_commands"] = []
-                sales_data["pending_commands"] = [c for c in sales_data["pending_commands"] if time.time() - c.get("ts", 0) < 30]
-                pending_cmd = {
-                    "cmd_id": cmd_id,
-                    "ip": ip,
-                    "quantidade": qtd,
-                    "modo": modo,
-                    "motivo": motivo,
-                    "ts": time.time(),
-                    "confirmed": False
-                }
-                sales_data["pending_commands"].append(pending_cmd)
-
-            # Aguarda até 3.5 segundos para o controlador consultar a fila via nuvem e confirmar
-            t_start = time.time()
-            while time.time() - t_start < 3.5:
-                time.sleep(0.4)
-                with data_lock:
-                    if cmd_id in sales_data.get("executed_commands", {}):
-                        confirmed = True
+                if cmd_id in sales_data.get("executed_commands", {}):
+                    confirmed = True
+                    break
+                for c in sales_data.get("pending_commands", []):
+                    if c.get("cmd_id") == cmd_id and c.get("status") in ("EXPIRADO", "FALHA"):
                         break
 
-        # 5. AVALIAÇÃO RIGOROSA DA CONFIRMAÇÃO REAL
         if confirmed:
             with data_lock:
-                sales_data["executed_commands"][cmd_id] = time.time()
-                active_m["status"] = "ONLINE"
-                active_m["ultimo_contato"] = time_str
-                active_m["ultimo_pulso"] = time_str
-                active_m["ultimo_comando"] = cmd_id
-                sales_data["last_confirmed_cmd"] = {
-                    "cmd_id": cmd_id,
-                    "quantidade": qtd,
-                    "modo": modo,
-                    "hora": time_str,
-                    "maquina": active_m.get("nome", "Distribuidora")
-                }
-
-                price = float(active_m.get("preco_ficha", sales_data.get("price_per_token", 2.50)))
-                valor_estimado = qtd * price
-
-                if modo == "venda":
-                    tipo_evento = "venda"
-                    desc = f"Venda Manual: {qtd} ficha(s) (R$ {valor_estimado:.2f}) [{cmd_id}]"
-                elif modo == "cortesia":
-                    tipo_evento = "cortesia"
-                    desc = f"Cortesia / Bônus: {qtd} ficha(s) [{cmd_id}]"
-                    valor_estimado = 0.0
-                else:
-                    tipo_evento = "manutencao"
-                    desc = f"Manutenção Técnica / Teste: {qtd} pulso(s) [{cmd_id}]"
-                    valor_estimado = 0.0
-
-            # SOMENTE ADICIONA AO FATURAMENTO/CAIXA SE CONFIRMADO
-            evt = add_event(tipo_evento, qtd, valor_estimado, desc, f"Painel -> ESP-01S ({ip})", extra={
-                "cmd_id": cmd_id,
-                "maquina": active_m.get("nome", "Distribuidora"),
-                "controlador": "ESP-01S",
-                "confirmado": True
-            })
-
-            add_technical_log(
-                cmd_id=cmd_id,
-                maquina=active_m.get("nome", "Distribuidora"),
-                fichas=qtd,
-                modo=modo,
-                resultado="CONFIRMADO",
-                contabilizado=(modo == "venda"),
-                resposta_controlador="200 OK (ESP-01S)",
-                detalhes="Pulso físico executado e confirmado" if not already_executed_on_esp else "Comando já executado anteriormente"
-            )
-
-            safe_print(f"[DISPARO CONFIRMADO] {qtd} ficha(s) confirmada(s) pelo ESP-01S ({ip}) [{cmd_id}]")
-
+                active_m = get_active_machine_unlocked()
+                last_evt = sales_data.get("events", [{}])[-1] if sales_data.get("events") else {}
             self.send_json(200, {
                 "success": True,
                 "confirmed": True,
+                "status": "CONFIRMADO",
                 "cmd_id": cmd_id,
                 "credits": qtd,
                 "modo": modo,
                 "ip": ip,
-                "details": resp_data,
-                "event": evt
+                "event": last_evt,
+                "message": "Ficha liberada com sucesso."
             })
-            return
         else:
-            # NÃO CONFIRMADO -> NÃO CONTABILIZAR!
             with data_lock:
-                active_m["status"] = "OFFLINE"
+                active_m = get_active_machine_unlocked()
+                # Atualiza status do comando para EXPIRADO
+                for c in sales_data.get("pending_commands", []):
+                    if c.get("cmd_id") == cmd_id:
+                        c["status"] = "EXPIRADO"
+                save_data()
 
             add_technical_log(
                 cmd_id=cmd_id,
@@ -1126,18 +1127,16 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 modo=modo,
                 resultado="FALHOU",
                 contabilizado=False,
-                resposta_controlador="ESP SEM RESPOSTA / TIMEOUT",
-                detalhes="Comando não confirmado pelo controlador. NÃO CONTABILIZADO."
+                resposta_controlador="TIMEOUT / SEM RESPOSTA",
+                detalhes="Controlador não confirmou a execução a tempo. NÃO CONTABILIZADO."
             )
-
-            safe_print(f"[DISPARO NÃO CONFIRMADO] {cmd_id} falhou. Nenhum crédito ou faturamento computado.")
-
+            safe_print(f"[DISPARO NÃO CONFIRMADO] {cmd_id} expirou sem confirmação do ESP-01S.")
             self.send_json(200, {
                 "success": False,
                 "confirmed": False,
+                "status": "EXPIRADO",
                 "cmd_id": cmd_id,
-                "error": error_msg or "Controlador ESP-01S não respondeu na rede local. Pulso NÃO executado.",
-                "status_controlador": "OFFLINE",
+                "error": "Controlador não confirmou a execução.",
                 "contabilizado": False
             })
 
@@ -1482,29 +1481,96 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
                 self.send_json(400, {"success": False, "error": "cmd_id não informado"})
                 return
 
+            now_ts = time.time()
+            now_br = datetime.now(BRAZIL_TZ)
+            time_str = now_br.strftime("%H:%M:%S")
+
             with data_lock:
                 active_m = get_active_machine_unlocked()
-                now_br = datetime.now(BRAZIL_TZ)
-                time_str = now_br.strftime("%H:%M:%S")
-
-                active_m["last_heartbeat_ts"] = time.time()
+                active_m["last_heartbeat_ts"] = now_ts
                 active_m["status"] = "ONLINE"
                 active_m["ultimo_contato"] = time_str
                 active_m["ultimo_pulso"] = time_str
                 active_m["ultimo_comando"] = cmd_id
+                if "ip" in req_data and req_data["ip"]:
+                    active_m["ip"] = str(req_data["ip"])
+                if active_m.get("ip") in ("192.168.10.99", "192.168.1.62"):
+                    active_m["ip"] = "192.168.18.99"
 
                 if "executed_commands" not in sales_data:
                     sales_data["executed_commands"] = {}
-                sales_data["executed_commands"][cmd_id] = time.time()
 
+                already_executed = cmd_id in sales_data["executed_commands"]
+                sales_data["executed_commands"][cmd_id] = now_ts
+
+                matched_cmd = None
                 for cmd in sales_data.get("pending_commands", []):
                     if cmd.get("cmd_id") == cmd_id:
+                        matched_cmd = cmd
+                        cmd["status"] = "CONFIRMADO"
                         cmd["confirmed"] = True
+                        cmd["confirmed_at"] = now_ts
+                        break
 
+                if already_executed:
+                    safe_print(f"[RECONFIRMAÇÃO IGNORADA] Comando {cmd_id} já executado anteriormente.")
+                    save_data()
+                    self.send_json(200, {
+                        "success": True,
+                        "already_executed": True,
+                        "cmd_id": cmd_id,
+                        "message": "Comando já confirmado anteriormente. Crédito não duplicado."
+                    })
+                    return
+
+                # Primeira confirmação do comando pelo ESP-01S!
+                qtd = int(matched_cmd.get("quantidade", req_data.get("quantidade", 1))) if matched_cmd else int(req_data.get("quantidade", 1))
+                modo = matched_cmd.get("modo", "manutencao") if matched_cmd else "manutencao"
+                motivo = matched_cmd.get("motivo", "Disparo Remoto") if matched_cmd else "Disparo Remoto"
+
+                sales_data["last_confirmed_cmd"] = {
+                    "cmd_id": cmd_id,
+                    "quantidade": qtd,
+                    "modo": modo,
+                    "hora": time_str,
+                    "maquina": active_m.get("nome", "Distribuidora")
+                }
+
+                price = float(active_m.get("preco_ficha", sales_data.get("price_per_token", 2.50)))
+                valor = qtd * price if modo == "venda" else 0.0
+
+                if modo == "venda":
+                    tipo_evento = "venda"
+                    desc = f"Venda Manual: {qtd} ficha(s) (R$ {valor:.2f}) [{cmd_id}]"
+                elif modo == "cortesia":
+                    tipo_evento = "cortesia"
+                    desc = f"Cortesia / Bônus: {qtd} ficha(s) [{cmd_id}]"
+                else:
+                    tipo_evento = "manutencao"
+                    desc = f"Manutenção Técnica / Teste: {qtd} pulso(s) [{cmd_id}]"
+
+                evt = add_event(tipo_evento, qtd, valor, desc, f"Painel -> ESP-01S ({active_m.get('ip', '192.168.18.99')})", extra={
+                    "cmd_id": cmd_id,
+                    "maquina": active_m.get("nome", "Distribuidora"),
+                    "controlador": "ESP-01S",
+                    "confirmado": True
+                })
+
+                add_technical_log(
+                    cmd_id=cmd_id,
+                    maquina=active_m.get("nome", "Distribuidora"),
+                    fichas=qtd,
+                    modo=modo,
+                    resultado="CONFIRMADO",
+                    contabilizado=(modo == "venda"),
+                    resposta_controlador="200 OK (ESP Cloud)",
+                    detalhes="Pulso físico executado e confirmado pelo ESP-01S"
+                )
+
+                safe_print(f"[PULSO CONFIRMADO COM SUCESSO] {cmd_id}: {qtd} ficha(s) executadas pelo ESP-01S.")
                 save_data()
 
-            add_technical_log(cmd_id, active_m.get("nome", "Distribuidora"), req_data.get("quantidade", 1), "nuvem", "CONFIRMADO", True, "200 OK (ESP Cloud)", "Confirmado via polling")
-            self.send_json(200, {"success": True, "cmd_id": cmd_id})
+            self.send_json(200, {"success": True, "confirmed": True, "cmd_id": cmd_id, "event": evt})
         except Exception as e:
             self.send_json(500, {"success": False, "error": str(e)})
 
@@ -1514,18 +1580,23 @@ class ArcadeHandler(SimpleHTTPRequestHandler):
             raw_body = self.rfile.read(length).decode('utf-8')
             req_data = json.loads(raw_body) if raw_body else {}
 
+            now_ts = time.time()
+            now_br = datetime.now(BRAZIL_TZ)
+            time_str = now_br.strftime("%H:%M:%S")
+
             with data_lock:
                 active_m = get_active_machine_unlocked()
-                now_br = datetime.now(BRAZIL_TZ)
-                time_str = now_br.strftime("%H:%M:%S")
-                active_m["last_heartbeat_ts"] = time.time()
+                active_m["last_heartbeat_ts"] = now_ts
                 active_m["status"] = "ONLINE"
                 active_m["ultimo_contato"] = time_str
+                active_m["device"] = req_data.get("device", "ESP-01S")
                 if "ip" in req_data and req_data["ip"]:
                     active_m["ip"] = str(req_data["ip"])
+                if active_m.get("ip") in ("192.168.10.99", "192.168.1.62"):
+                    active_m["ip"] = "192.168.18.99"
                 save_data()
 
-            self.send_json(200, {"success": True, "status": "online", "time": time_str})
+            self.send_json(200, {"success": True, "status": "online", "time": time_str, "ip": active_m.get("ip")})
         except Exception as e:
             self.send_json(500, {"success": False, "error": str(e)})
 
