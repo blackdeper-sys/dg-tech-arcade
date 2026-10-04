@@ -355,7 +355,7 @@ def load_data():
                         m["percentual_proprietario"] = 100
                         m["percentual_dg_tech"] = 100
                         m["percentual_parceiro"] = 0
-                        if not m.get("ip"):
+                        if not m.get("ip") or m.get("ip") in ("192.168.10.99", "192.168.1.62"):
                             m["ip"] = "192.168.18.99"
                         if not m.get("controlador"):
                             m["controlador"] = "ESP-01S"

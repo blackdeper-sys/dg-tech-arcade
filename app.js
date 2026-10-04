@@ -346,7 +346,7 @@ function loadLocalState() {
     const saved = localStorage.getItem(DG_STATE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (parsed.esp01Ip === '192.168.1.62' || !parsed.esp01Ip) {
+      if (['192.168.1.62', '192.168.10.99'].includes(parsed.esp01Ip) || !parsed.esp01Ip) {
         parsed.esp01Ip = '192.168.18.99';
       }
       if (parsed.machineName === 'DG ARCADE #01' || !parsed.machineName) {
